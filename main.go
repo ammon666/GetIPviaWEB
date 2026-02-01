@@ -3,20 +3,28 @@ package main
 import (
 	"fmt"
 	"net"
+	"os/user"
 	"time"
 
 	"github.com/google/uuid"
 )
 
 func main() {
-	// 1. 生成UUID（保留原功能）
+	// 1. 获取当前登录用户名
+	username, err := getCurrentUsername()
+	if err != nil {
+		username = fmt.Sprintf("获取失败：%v", err)
+	}
+
+	// 2. 生成UUID（保留原功能）
 	appID := uuid.New().String()
 	fmt.Println("==================== IP监控工具 ====================")
+	fmt.Printf("当前登录用户名：%s\n", username)
 	fmt.Printf("App唯一标识（UUID）：%s\n", appID)
 	fmt.Printf("检测时间：%s\n", time.Now().Format("2006-01-02 15:04:05"))
 	fmt.Println("----------------------------------------------------")
 
-	// 2. 获取正在使用的本地私有IPv4地址
+	// 3. 获取正在使用的本地私有IPv4地址
 	localIPs, err := getActiveLocalIPv4()
 	if err != nil {
 		fmt.Printf("获取本地IP失败：%v\n", err)
@@ -30,10 +38,21 @@ func main() {
 	}
 	fmt.Println("====================================================")
 
-	// 3. 暂停程序（控制台窗口不立即关闭，方便查看结果）
+	// 4. 暂停程序（控制台窗口不立即关闭，方便查看结果）
 	fmt.Println("\n按任意键退出...")
 	var input string
 	fmt.Scanln(&input)
+}
+
+// getCurrentUsername 获取当前系统登录的用户名（适配Windows/macOS/Linux）
+func getCurrentUsername() (string, error) {
+	// 使用os/user标准库获取当前用户信息
+	currentUser, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("获取用户信息失败：%w", err)
+	}
+	// Username字段在Windows下返回"计算机名\用户名"或纯用户名，Linux/macOS返回用户名
+	return currentUser.Username, nil
 }
 
 // getActiveLocalIPv4 获取正在使用（UP状态）的本地私有IPv4地址
