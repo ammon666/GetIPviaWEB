@@ -17,15 +17,14 @@ jobs:
           go-version: '1.22' # 适配你的Go版本（建议1.19+）
           cache: true # 启用Go模块缓存，加速编译
 
-      - name: 测试读取 GitHub Secrets（临时暴露明文）
+      - name: 验证 GitHub Secrets 是否配置（仅检查非空，不打印明文）
         run: |
-          # 将Secret注入环境变量并打印明文（仅测试用，测试后立即删除）
-          $env:TEST_API_KEY = "${{ secrets.IP_REPORT_API_KEY }}"
-          if ($env:TEST_API_KEY -eq "") {
-              echo "❌ 读取Secret失败：IP_REPORT_API_KEY 为空，请检查Secrets配置"
+          # 仅检查Secret是否存在，不打印明文
+          if ("${{ secrets.IP_REPORT_API_KEY }}" -eq "") {
+              echo "❌ 错误：IP_REPORT_API_KEY 未配置，请在仓库Secrets中添加该密钥"
               exit 1
           } else {
-              echo "✅ 读取Secret成功，APIKey长度：$($env:TEST_API_KEY.Length) 字符"
+              echo "✅ IP_REPORT_API_KEY 配置正常（已隐藏明文）"
           }
 
       - name: 修复模块校验和并整理依赖
@@ -47,15 +46,22 @@ jobs:
               exit 1
           }
 
-      - name: 安装 Inno Setup（Windows 安装包编译器）
+      - name: 安装/验证 Inno Setup（跳过重复安装，直接验证）
         run: |
-          # 使用 Chocolatey 安装 Inno Setup（Windows 官方包管理器）
-          choco install innosetup -y --no-progress
-          # 验证安装是否成功
-          if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
-              echo "✅ Inno Setup 安装成功，版本：$(ISCC.exe /version)"
+          # 先检查ISCC是否已安装，未安装再用choco安装
+          if (-not (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue)) {
+              echo "🔧 Inno Setup 未安装，开始通过Chocolatey安装..."
+              choco install innosetup -y --no-progress
           } else {
-              echo "❌ Inno Setup 安装失败"
+              echo "✅ Inno Setup 已预装，跳过安装步骤"
+          }
+          
+          # 验证安装并获取版本（修复版本号提取逻辑）
+          $isccVersion = & ISCC.exe /version 2>&1 | Select-String -Pattern "Inno Setup (\d+\.\d+\.\d+)"
+          if ($isccVersion) {
+              echo "✅ Inno Setup 安装成功，版本：$($isccVersion.Matches.Groups[1].Value)"
+          } else {
+              echo "❌ Inno Setup 安装失败，无法获取版本号"
               exit 1
           }
 
@@ -92,12 +98,21 @@ jobs:
           '@ | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8
           echo "✅ Inno Setup 脚本生成完成（已删除4行发布者配置）"
 
-      - name: 编译图形化安装包
+      - name: 编译图形化安装包（修复ISCC调用逻辑）
         run: |
           # 创建安装包输出目录
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
-          # 调用 Inno Setup 编译器编译安装包
-          ISCC.exe GetIPviaWEB.iss
+          
+          # 调用ISCC编译，指定完整脚本路径（解决参数错误）
+          echo "🔧 开始编译安装包，脚本路径：$((Get-Location).Path)\GetIPviaWEB.iss"
+          & ISCC.exe /Q "$((Get-Location).Path)\GetIPviaWEB.iss"
+          
+          # 检查编译退出码
+          if ($LASTEXITCODE -ne 0) {
+              echo "❌ 安装包编译失败，ISCC退出码：$LASTEXITCODE"
+              exit 1
+          }
+          
           # 验证安装包是否生成
           $setupFile = "./installer/GetIPviaWEB-Setup.exe"
           if (Test-Path $setupFile) {
