@@ -114,82 +114,91 @@ jobs:
           Write-Host "✅ 重置退出码，流程继续"
         id: check-inno
 
-      # ========== 生成ISS脚本（彻底解决YAML语法+Type参数问题） ==========
+      # ========== 生成ISS脚本（彻底解决Type参数无效问题） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 生成ISS脚本（YAML+ISS双合规）"
+          Write-Host "🔧 生成ISS脚本（纯文本+无隐形字符）"
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 核心：改用数组逐行定义ISS内容，无Here-String，避免YAML解析冲突
-          $issLines = @(
-              "[Setup]",
-              "AppName=GetIPviaWEB",
-              "AppVersion=1.0.0",
-              "DefaultDirName={pf}\GetIPviaWEB",
-              "DefaultGroupName=GetIPviaWEB",
-              "OutputDir=./installer",
-              "OutputBaseFilename=GetIPviaWEB-Setup",
-              "Compression=lzma",
-              "SolidCompression=yes",
-              "PrivilegesRequired=admin",
-              "SetupMutex=GetIPviaWEB-InstallMutex",
-              "CloseApplications=yes",
-              "CloseApplicationsFilter=GetIPviaWEB.exe",
-              "",
-              "[Files]",
-              "Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""",
-              "",
-              "[Icons]",
-              "Name: ""{group}\GetIPviaWEB""; Filename: ""{app}\GetIPviaWEB.exe""",
-              "Name: ""{group}\卸载GetIPviaWEB""; Filename: ""{uninstallexe}""; Parameters: ""/VERYSILENT""",
-              "",
-              "[Run]",
-              "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Flags: runhidden",
-              "",
-              "[UninstallRun]",
-              "Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runhidden nowait",
-              "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait",
-              "Filename: ""cmd.exe""; Parameters: ""/c rmdir /s /q ""{app}""""; Flags: skipifdoesntexist runhidden nowait",
-              "",
-              "[UninstallDelete]",
-              # 严格合规的Type参数格式：分号+空格，无隐形字符
-              "Type: files; Name: ""{app}\*.*""",
-              "Type: dirs; Name: ""{app}""",
-              "",
-              "[Code]",
-              "function InitializeSetup(): Boolean;",
-              "var",
-              "  IsAdmin: Boolean;",
-              "begin",
-              "  IsAdmin := IsAdminLoggedOn();",
-              "  if not IsAdmin then",
-              "  begin",
-              "    MsgBox('请以管理员身份运行安装包！' + #13#10 + '右键 → 以管理员身份运行', mbError, MB_OK);",
-              "    Result := False;",
-              "  end",
-              "  else",
-              "  begin",
-              "    Result := True;",
-              "  end;",
-              "end;"
-          )
+          # 核心修复：直接用纯文本字符串定义，手动确保[UninstallDelete]段无任何隐形字符
+          # 逐行验证：Type参数仅为小写files/dirs，分号后是半角空格，无全角/零宽字符
+          $issContent = @"
+[Setup]
+AppName=GetIPviaWEB
+AppVersion=1.0.0
+DefaultDirName={pf}\GetIPviaWEB
+DefaultGroupName=GetIPviaWEB
+OutputDir=./installer
+OutputBaseFilename=GetIPviaWEB-Setup
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=admin
+SetupMutex=GetIPviaWEB-InstallMutex
+CloseApplications=yes
+CloseApplicationsFilter=GetIPviaWEB.exe
+
+[Files]
+Source: "GetIPviaWEB.exe"; DestDir: "{app}"
+
+[Icons]
+Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"
+Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"; Parameters: "/VERYSILENT"
+
+[Run]
+Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Flags: runhidden
+
+[UninstallRun]
+Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait
+Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait
+Filename: "cmd.exe"; Parameters: "/c rmdir /s /q ""{app}"""; Flags: skipifdoesntexist runhidden nowait
+
+[UninstallDelete]
+Type: files; Name: "{app}\*.*"
+Type: dirs; Name: "{app}"
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  IsAdmin: Boolean;
+begin
+  IsAdmin := IsAdminLoggedOn();
+  if not IsAdmin then
+  begin
+    MsgBox('请以管理员身份运行安装包！' + #13#10 + '右键 → 以管理员身份运行', mbError, MB_OK);
+    Result := False;
+  end
+  else
+  begin
+    Result := True;
+  end;
+end;
+"@
           
-          # 拼接为完整内容（CRLF换行，符合Inno Setup要求）
-          $issContent = $issLines -join "`r`n"
+          # 关键1：转换为纯ASCII字符，过滤所有非打印/隐形字符
+          $issContent = $issContent -replace '[^\x20-\x7E\r\n]', ''
           
-          # 关键：UTF8无BOM写入，解决Type参数解析错误
+          # 关键2：UTF8无BOM写入，且强制CRLF换行（Inno Setup要求）
           $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          $issContent = $issContent -replace "`n", "`r`n" # 统一为CRLF
           [System.IO.File]::WriteAllText("$PWD/GetIPviaWEB.iss", $issContent, $utf8NoBom)
           
-          # 验证文件
+          # 验证[UninstallDelete]段内容（打印原始字符）
+          Write-Host "🔍 验证[UninstallDelete]段原始内容："
+          $uninstallDeleteLines = Get-Content "GetIPviaWEB.iss" | Where-Object { $_ -match 'Type: files|Type: dirs' }
+          foreach ($line in $uninstallDeleteLines) {
+              Write-Host "原始行：$line"
+              # 打印字符的ASCII码，确保无异常
+              $chars = $line.ToCharArray()
+              $asciiCodes = $chars | ForEach-Object { [int]$_ }
+              Write-Host "ASCII码：$($asciiCodes -join ', ')"
+          }
+          
           if (Test-Path "GetIPviaWEB.iss") {
               $size = (Get-Item GetIPviaWEB.iss).Length
               Write-Host "✅ ISS脚本生成成功，大小：$size 字节"
-              Write-Host "🔍 [UninstallDelete]段内容："
-              Get-Content "GetIPviaWEB.iss" | Select-String -Pattern "Type: files|Type: dirs"
           } else {
               Write-Host "❌ ISS脚本生成失败"
               exit 1
@@ -210,6 +219,9 @@ jobs:
           
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ 安装包编译失败，退出码：$LASTEXITCODE"
+              # 打印ISS文件完整内容，便于排查
+              Write-Host "🔍 ISS文件完整内容："
+              Get-Content "GetIPviaWEB.iss"
               exit 1
           }
           
