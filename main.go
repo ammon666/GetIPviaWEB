@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
@@ -304,15 +305,15 @@ func copyProgramToInstallDir() error {
 
 // writeUninstallInfo 写入卸载信息到注册表
 func writeUninstallInfo() error {
-	// 打开卸载注册表项
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallKeyPath, registry.CREATE_SUB_KEY|registry.SET_VALUE)
+	// 打开卸载注册表项（LOCAL_MACHINE需要管理员权限）
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallKeyPath, registry.WRITE)
 	if err != nil {
 		return err
 	}
 	defer key.Close()
 
-	// 创建当前程序的卸载子项
-	uninstallSubKey, err := key.CreateSubKey(serviceName)
+	// 创建当前程序的卸载子项（修复：用registry.CreateKey替代key.CreateSubKey）
+	uninstallSubKey, _, err := registry.CreateKey(key, serviceName, registry.WRITE)
 	if err != nil {
 		return err
 	}
@@ -321,13 +322,13 @@ func writeUninstallInfo() error {
 	// 写入卸载信息（系统添加/删除程序所需字段）
 	uninstallExe := fmt.Sprintf("\"%s\" uninstall", filepath.Join(defaultInstallDir, filepath.Base(os.Args[0])))
 	fields := map[string]string{
-		"DisplayName":    displayName,
-		"DisplayVersion": "1.0.0",
-		"Publisher":      "IPReportService",
+		"DisplayName":     displayName,
+		"DisplayVersion":  "1.0.0",
+		"Publisher":       "IPReportService",
 		"UninstallString": uninstallExe,
-		"DisplayIcon":    filepath.Join(defaultInstallDir, filepath.Base(os.Args[0])),
-		"NoModify":       "1",
-		"NoRepair":       "1",
+		"DisplayIcon":     filepath.Join(defaultInstallDir, filepath.Base(os.Args[0])),
+		"NoModify":        "1",
+		"NoRepair":        "1",
 	}
 
 	for k, v := range fields {
@@ -342,13 +343,9 @@ func writeUninstallInfo() error {
 
 // deleteUninstallInfo 删除注册表中的卸载信息
 func deleteUninstallInfo() error {
-	key, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallKeyPath, registry.ALL_ACCESS)
+	// 修复：用registry.DeleteKey替代key.DeleteSubKey
+	err := registry.DeleteKey(registry.LOCAL_MACHINE, filepath.Join(uninstallKeyPath, serviceName))
 	if err != nil {
-		return err
-	}
-	defer key.Close()
-
-	if err := key.DeleteSubKey(serviceName); err != nil {
 		return err
 	}
 
@@ -356,26 +353,32 @@ func deleteUninstallInfo() error {
 	return nil
 }
 
-// isAdmin 检查是否为管理员权限
+// isAdmin 检查是否为管理员权限（修复：使用正确的syscall/windows包方法）
 func isAdmin() bool {
-	var sid *syscall.SID
-	err := syscall.AllocateAndInitializeSid(
-		&syscall.SECURITY_NT_AUTHORITY,
+	var sid *windows.SID
+
+	// 创建管理员组的SID
+	err := windows.AllocateAndInitializeSid(
+		&windows.SECURITY_NT_AUTHORITY,
 		2,
-		syscall.SECURITY_BUILTIN_DOMAIN_RID,
-		syscall.DOMAIN_ALIAS_RID_ADMINS,
+		windows.SECURITY_BUILTIN_DOMAIN_RID,
+		windows.DOMAIN_ALIAS_RID_ADMINS,
 		0, 0, 0, 0, 0, 0,
 		&sid)
 	if err != nil {
+		logger.Error("创建管理员SID失败：%v", err)
 		return false
 	}
-	defer syscall.FreeSid(sid)
+	defer windows.FreeSid(sid)
 
-	token := syscall.Token(0)
+	// 获取当前进程的访问令牌
+	token := windows.Token(0)
 	member, err := token.IsMember(sid)
 	if err != nil {
+		logger.Error("检查令牌成员失败：%v", err)
 		return false
 	}
+
 	return member
 }
 
