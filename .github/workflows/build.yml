@@ -52,13 +52,14 @@ jobs:
           Write-Host "✅ 依赖整理完成"
         id: fix-mod
 
-      - name: 编译可执行文件（注入APIKey）
+      - name: 编译可执行文件（注入APIKey，修复-H参数报错）
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始编译Go程序（注入APIKey）"
-          go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" -H=windowsgui main.go
+          Write-Host "🔧 开始编译Go程序（注入APIKey+生成GUI程序）"
+          # 核心修复：将-H=windowsgui移到-ldflags中，新版Go仅支持这种方式
+          go build -o GetIPviaWEB.exe -ldflags="-s -w -H windowsgui -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ Go程序编译失败，退出码：$LASTEXITCODE"
               exit 1
