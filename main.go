@@ -8,17 +8,20 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/user"
+	"runtime"
 	"strings"
 	"time"
 )
 
 // 配置项：修正后的正确上报地址（删除了错误的POST%20）
 const (
-	WorkersURL     = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
-	Timeout        = 5 * time.Second                         // 上报超时时间
-	APIKey         = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
-	ReportInterval = 1 * time.Minute                         // 新增：上报时间间隔（可调整，示例为1分钟）
+	WorkersURL       = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
+	QueryURL         = "https://getip.ammon.de5.net/api/query"  // UUID查询地址（根据实际地址调整）
+	Timeout          = 5 * time.Second                         // 上报超时时间
+	APIKey           = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
+	OpenBrowserAfter = true                                    // 是否在上报成功后打开浏览器
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
@@ -45,34 +48,19 @@ func main() {
 	// 1. 初始化机器固定UUID（唯一查询标识，优先初始化）
 	initMachineFixedUUID()
 
-	// 2. 立即执行首次上报（保持原有逻辑）
-	performReport()
-
-	// 3. 启动定时上报协程（新增核心逻辑）
-	go startPeriodicReport()
-
-	// 4. 暂停程序（控制台窗口不立即关闭）
-	fmt.Println("\n程序已启动，将每隔", ReportInterval, "自动上报一次信息...")
-	fmt.Println("按任意键退出程序...")
-	var input string
-	fmt.Scanln(&input)
-}
-
-// 新增：执行单次上报（抽离原有上报逻辑，便于复用）
-func performReport() {
-	// 获取当前登录用户名（仅保留纯用户名，去掉计算机名）
+	// 2. 获取当前登录用户名（仅保留纯用户名，去掉计算机名）
 	username, err := getCurrentUsername()
 	if err != nil {
 		username = fmt.Sprintf("获取失败：%v", err)
 	}
 
-	// 获取主机名
+	// 3. 获取主机名
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "Unknown"
 	}
 
-	// 获取正在使用的物理网卡私有IPv4地址及网络信息
+	// 4. 获取正在使用的物理网卡私有IPv4地址及网络信息
 	networkInfos, err := getActivePhysicalNicInfo()
 	if err != nil {
 		fmt.Printf("【错误】获取物理网卡信息失败：%v\n", err)
@@ -84,7 +72,7 @@ func performReport() {
 		}
 	}
 
-	// 输出核心信息（UUID 放到最前面，作为唯一标识）
+	// 5. 输出核心信息（UUID 放到最前面，作为唯一标识）
 	fmt.Println("\n==================== IP监控工具 ====================")
 	fmt.Printf("机器唯一查询标识（UUID）：%s\n", machineFixedUUID) // 优先展示UUID
 	fmt.Printf("当前登录用户名：%s\n", username)
@@ -105,7 +93,7 @@ func performReport() {
 	}
 	fmt.Println("====================================================")
 
-	// 上报信息到指定地址（UUID 作为核心字段）
+	// 6. 上报信息到指定地址（UUID 作为核心字段）
 	reportData := ReportData{
 		UUID:      machineFixedUUID,
 		Username:  username,
@@ -113,24 +101,29 @@ func performReport() {
 		Networks:  networkInfos,
 		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 	}
+	reportSuccess := false
 	if err := reportToWorkers(reportData); err != nil {
 		fmt.Printf("\n【上报失败】%v\n", err)
 	} else {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
+		reportSuccess = true
 	}
-}
 
-// 新增：启动定时上报循环
-func startPeriodicReport() {
-	// 创建定时器，每隔 ReportInterval 执行一次
-	ticker := time.NewTicker(ReportInterval)
-	defer ticker.Stop()
-
-	// 循环监听定时器信号
-	for range ticker.C {
-		fmt.Printf("\n\n【定时上报】到达上报时间间隔（%s），开始执行新一轮上报...\n", ReportInterval)
-		performReport()
+	// 7. 上报成功后打开浏览器访问查询地址
+	if OpenBrowserAfter && reportSuccess {
+		queryFullURL := fmt.Sprintf("%s?uuid=%s", QueryURL, machineFixedUUID)
+		fmt.Printf("\n【打开浏览器】正在访问UUID查询地址：%s\n", queryFullURL)
+		if err := openBrowser(queryFullURL); err != nil {
+			fmt.Printf("【打开浏览器失败】%v\n", err)
+		} else {
+			fmt.Println("【打开浏览器成功】请在浏览器中查看查询结果")
+		}
 	}
+
+	// 8. 暂停程序（控制台窗口不立即关闭）
+	fmt.Println("\n按任意键退出...")
+	var input string
+	fmt.Scanln(&input)
 }
 
 // getCurrentUsername 获取纯用户名（去掉Windows的计算机名前缀）
@@ -380,4 +373,31 @@ func reportToWorkers(data ReportData) error {
 	}
 
 	return nil
+}
+
+// openBrowser 打开指定URL的浏览器（跨平台兼容）
+func openBrowser(url string) error {
+	var cmd string
+	var args []string
+
+	// 根据不同操作系统选择打开浏览器的命令
+	switch runtime.GOOS {
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start", url}
+	case "darwin": // macOS
+		cmd = "open"
+		args = []string{url}
+	case "linux": // Linux
+		cmd = "xdg-open"
+		args = []string{url}
+	default:
+		return fmt.Errorf("不支持的操作系统：%s", runtime.GOOS)
+	}
+
+	// 执行打开浏览器命令（不阻塞主程序）
+	cmdExec := exec.Command(cmd, args...)
+	cmdExec.Stdout = os.Stdout
+	cmdExec.Stderr = os.Stderr
+	return cmdExec.Start()
 }
