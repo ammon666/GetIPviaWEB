@@ -1,81 +1,78 @@
-name: Build & Run IP Monitor
+# 工作流名称
+name: Build Go Program on Windows
+
+# 触发条件：push或pull_request到main分支时触发
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:
+  pull_request:
+    branches: [ main ]
 
+# 任务定义
 jobs:
-  build-windows:
+  build:
+    # 指定运行环境为Windows最新版
     runs-on: windows-latest
-    timeout-minutes: 5  # 全局超时，避免无限卡住
+
+    # 步骤列表
     steps:
-      - name: 检出代码
+      # 步骤1：拉取代码到Runner
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 设置Go环境
+      # 步骤2：安装Go环境（根据需要指定版本）
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          cache: true  # 缓存Go依赖，加速编译
+          go-version: '1.21'  # 替换为你的Go项目实际使用的版本
+          cache: true  # 启用Go模块缓存，加速构建
 
-      - name: 调试 - 系统/Go环境信息
+      # 步骤3：打印系统信息（修正Shell为Bash，解决if语法报错）
+      - name: Print system information
+        shell: bash  # 关键：指定用Bash执行该脚本
         run: |
           echo "=== 系统信息 ==="
-          systeminfo | findstr /B /C:"OS Name" /C:"OS Version"
-          echo "=== Go版本 ==="
-          go version
-          echo "=== Go环境变量 ==="
-          go env
-          echo "=== WORKERS_API_KEY 存在性 ==="
-          if [ "${{ secrets.WORKERS_API_KEY }}" != "" ]; then
-            echo "✅ WORKERS_API_KEY 已传递"
+          echo "操作系统：$(uname -a)"
+          echo "Go版本：$(go version)"
+          echo "工作目录：$(pwd)"
+          # 示例：判断自定义Secret是否存在（替换为你的实际Secret名称）
+          if [ "${{ secrets.MY_CUSTOM_SECRET }}" != "" ]; then
+            echo "✅ 自定义Secret已配置"
           else
-            echo "❌ WORKERS_API_KEY 未传递"
+            echo "⚠️ 自定义Secret未配置（非必须项）"
           fi
 
-      - name: 编译程序
-        env:
-          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }}
+      # 步骤4：编译Go程序（main.go）
+      - name: Build Go program
+        shell: bash  # 指定Bash执行编译命令
         run: |
-          echo "=== 开始编译 ==="
-          go build -ldflags="-s -w" -o ip-monitor.exe main.go  # 精简编译产物
-          if [ $? -eq 0 ]; then
-            echo "✅ 编译成功"
+          echo "=== 开始编译main.go ==="
+          # 编译main.go并输出为可执行文件（Windows下后缀为.exe）
+          go build -o GetIPviaWEB.exe -ldflags="-s -w" main.go
+          # 验证编译结果
+          if [ -f "GetIPviaWEB.exe" ]; then
+            echo "✅ 编译成功！生成可执行文件：GetIPviaWEB.exe"
+            ls -lh GetIPviaWEB.exe  # 打印文件信息
           else
-            echo "❌ 编译失败"
-            exit 1
+            echo "❌ 编译失败！未生成可执行文件"
+            exit 1  # 编译失败则终止工作流
           fi
 
-      - name: 验证编译产物
+      # 步骤5（可选）：运行编译后的程序（若需要验证运行）
+      - name: Run compiled program (optional)
+        shell: bash
         run: |
-          echo "=== 检查编译产物 ==="
-          if [ -f "ip-monitor.exe" ]; then
-            echo "✅ ip-monitor.exe 存在"
-            dir ip-monitor.exe
-          else
-            echo "❌ ip-monitor.exe 不存在"
-            exit 1
-          fi
+          echo "=== 运行编译后的程序 ==="
+          # 若你的程序有仅编译模式（如-build参数），可执行：
+          # go run main.go -build
+          # 或直接运行生成的exe文件：
+          ./GetIPviaWEB.exe
+        continue-on-error: false  # 程序运行失败则终止工作流（根据需要改为true）
 
-      - name: 运行程序（执行上报）
-        env:
-          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }}
-        timeout-minutes: 2  # 单独设置步骤超时
-        run: |
-          echo "=== 开始运行程序 ==="
-          # Windows下强制输出日志，捕获错误
-          .\ip-monitor.exe
-          # 检查程序退出码
-          if [ $LASTEXITCODE -eq 0 ]; then
-            echo "✅ 程序运行成功"
-          else
-            echo "❌ 程序运行失败，退出码：$LASTEXITCODE"
-            exit $LASTEXITCODE
-          fi
-
-      - name: 上传产物（可选）
-        if: always()  # 即使前面步骤失败，也上传产物用于调试
+      # 步骤6（可选）：上传编译产物（便于下载）
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ip-monitor-windows
-          path: ip-monitor.exe
+          name: GetIPviaWEB-Windows
+          path: GetIPviaWEB.exe
+          retention-days: 7  # 产物保留7天
