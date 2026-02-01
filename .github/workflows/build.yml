@@ -93,6 +93,9 @@ jobs:
           try {
               & ISCC.exe /? 2>&1 | Out-Null
               Write-Host "✅ Inno Setup验证成功（可正常调用ISCC编译器）"
+              # 强制打印当前工作目录和ISCC路径（排查环境问题）
+              Write-Host "🔍 当前工作目录：$(Get-Location)"
+              Write-Host "🔍 ISCC.exe路径：$(Get-Command ISCC.exe | Select-Object -ExpandProperty Source)"
           } catch {
               Write-Error "❌ Inno Setup验证失败，异常信息：$_"
               exit 1
@@ -100,13 +103,24 @@ jobs:
         id: check-inno
         continue-on-error: false
 
-      # ========== 核心修复：拆分ISS脚本生成逻辑，避免YAML多行字符串冲突 ==========
-      - name: 生成 Inno Setup 安装包脚本（无YAML语法冲突）
+      # ========== 分步生成ISS脚本，每一步都打印日志 ==========
+      - name: 步骤1：清空旧的ISS文件（避免残留）
         run: |
-          Write-Host "🔧 生成Inno Setup配置脚本（GetIPviaWEB.iss）"
-          
-          # 分步写入ISS内容，避免多行字符串触发YAML错误
-          " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          Write-Host "🔧 步骤1：清空旧的ISS文件"
+          if (Test-Path "GetIPviaWEB.iss") {
+              Remove-Item "GetIPviaWEB.iss" -Force
+              Write-Host "✅ 已删除旧的ISS文件"
+          } else {
+              Write-Host "✅ 无旧的ISS文件，跳过删除"
+          }
+        id: step1-clear-iss
+        continue-on-error: false
+
+      - name: 步骤2：逐行生成ISS脚本（核心配置）
+        run: |
+          Write-Host "🔧 步骤2：开始生成ISS脚本核心配置"
+          # 初始化ISS文件（覆盖模式）
+          " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Force
           " AppName=GetIPviaWEB Service" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " DefaultDirName={autopf}\GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -117,6 +131,14 @@ jobs:
           " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " PrivilegesRequired=lowest" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          Write-Host "✅ 步骤2完成：生成[Setup]段配置"
+        id: step2-generate-setup
+        continue-on-error: false
+
+      - name: 步骤3：生成ISS脚本（文件/图标配置）
+        run: |
+          Write-Host "🔧 步骤3：生成ISS脚本文件/图标配置"
           " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -124,6 +146,14 @@ jobs:
           " Name: ""{group}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Name: ""{commondesktop}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""; Flags: createonlyiffileexists" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          Write-Host "✅ 步骤3完成：生成[Files]/[Icons]段配置"
+        id: step3-generate-files
+        continue-on-error: false
+
+      - name: 步骤4：生成ISS脚本（运行/卸载配置）
+        run: |
+          Write-Host "🔧 步骤4：生成ISS脚本运行/卸载配置"
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Filename: ""{app}\GetIPviaWEB.exe""; Description: ""启动 GetIPviaWEB 服务""; Flags: postinstall skipifsilent" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -133,71 +163,104 @@ jobs:
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
-          # 转换换行符为CRLF（兼容Inno Setup）
+          Write-Host "✅ 步骤4完成：生成[Run]/[Uninstall]段配置"
+        id: step4-generate-run
+        continue-on-error: false
+
+      - name: 步骤5：修复ISS脚本换行符（CRLF）
+        run: |
+          Write-Host "🔧 步骤5：修复ISS脚本换行符为CRLF"
           $content = Get-Content GetIPviaWEB.iss -Raw
-          $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8
+          $content = $content -replace "`n", "`r`n"
+          $content | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
+          
+          # 打印ISS文件内容（排查语法错误）
+          Write-Host "🔍 ISS脚本最终内容："
+          Get-Content GetIPviaWEB.iss
           
           # 验证ISS文件
           if (Test-Path "GetIPviaWEB.iss") {
               $fileSize = (Get-Item GetIPviaWEB.iss).Length
-              Write-Host "✅ ISS脚本生成成功，文件大小：$fileSize 字节"
+              Write-Host "✅ 步骤5完成：ISS脚本生成成功，文件大小：$fileSize 字节"
           } else {
-              Write-Error "❌ ISS脚本生成失败，未创建GetIPviaWEB.iss"
+              Write-Error "❌ 步骤5失败：未生成ISS文件"
               exit 1
           }
-        id: generate-iss
+        id: step5-fix-linebreak
         continue-on-error: false
 
-      - name: 编译图形化安装包
+      # ========== 分步编译安装包，每一步都打印日志 ==========
+      - name: 步骤6：创建安装包输出目录
         run: |
-          Write-Host "🔧 开始编译图形化安装包"
+          Write-Host "🔧 步骤6：创建安装包输出目录"
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
-          
+          if (Test-Path "./installer") {
+              Write-Host "✅ 步骤6完成：安装包输出目录创建成功"
+          } else {
+              Write-Error "❌ 步骤6失败：无法创建installer目录"
+              exit 1
+          }
+        id: step6-create-dir
+        continue-on-error: false
+
+      - name: 步骤7：编译图形化安装包（打印详细日志）
+        run: |
+          Write-Host "🔧 步骤7：开始编译安装包"
           $issPath = (Resolve-Path GetIPviaWEB.iss).Path
-          Write-Host "🔧 ISS脚本绝对路径：$issPath"
+          Write-Host "🔍 ISS脚本绝对路径：$issPath"
           
-          Write-Host "🔧 执行命令：ISCC.exe /O`"./installer`" /F`"GetIPviaWEB-Setup`" `"$issPath`""
-          & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup" "$issPath"
+          # 执行ISCC编译，打印所有输出
+          Write-Host "🔍 执行ISCC命令：ISCC.exe /O`"./installer`" /F`"GetIPviaWEB-Setup`" `"$issPath`""
+          & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup" "$issPath" 2>&1
           $compileExitCode = $LASTEXITCODE
           
-          if ($compileExitCode -eq 0) {
-              $setupFile = "./installer/GetIPviaWEB-Setup.exe"
-              if (Test-Path $setupFile) {
-                  $fileSize = (Get-Item $setupFile).Length
-                  Write-Host "✅ 安装包编译成功，文件大小：$fileSize 字节"
-              } else {
-                  Write-Error "❌ ISCC编译退出码为0，但未找到安装包文件：$setupFile"
-                  exit 1
-              }
-          } else {
-              Write-Error "❌ 安装包编译失败，ISCC退出码：$compileExitCode"
+          Write-Host "🔍 ISCC编译退出码：$compileExitCode"
+          if ($compileExitCode -ne 0) {
+              Write-Error "❌ 步骤7失败：ISCC编译失败，退出码：$compileExitCode"
               exit 1
           }
-        id: build-installer
+          Write-Host "✅ 步骤7完成：ISCC编译成功"
+        id: step7-compile-installer
         continue-on-error: false
 
-      - name: 上传可执行文件产物
+      - name: 步骤8：验证安装包是否生成
+        run: |
+          Write-Host "🔧 步骤8：验证安装包是否生成"
+          $setupFile = "./installer/GetIPviaWEB-Setup.exe"
+          if (Test-Path $setupFile) {
+              $fileSize = (Get-Item $setupFile).Length
+              Write-Host "✅ 步骤8完成：安装包生成成功，文件大小：$fileSize 字节"
+          } else {
+              Write-Error "❌ 步骤8失败：未找到安装包文件 $setupFile"
+              exit 1
+          }
+        id: step8-verify-installer
+        continue-on-error: false
+
+      # ========== 上传产物 ==========
+      - name: 步骤9：上传可执行文件
         uses: actions/upload-artifact@v4
         with:
           name: GetIPviaWEB-Windows-Exe
           path: GetIPviaWEB.exe
           retention-days: 7
-        id: upload-exe
+        id: step9-upload-exe
         continue-on-error: false
 
-      - name: 上传图形化安装包产物
+      - name: 步骤10：上传安装包
         uses: actions/upload-artifact@v4
         with:
           name: GetIPviaWEB-Windows-Setup
           path: ./installer/GetIPviaWEB-Setup.exe
           retention-days: 7
-        id: upload-installer
+        id: step10-upload-installer
         continue-on-error: false
 
-      - name: 最终结果确认
+      - name: 最终确认
         run: |
           Write-Host "🎉 全流程执行完成！"
-          Write-Host "✅ Go程序编译成功：$(Test-Path GetIPviaWEB.exe)"
-          Write-Host "✅ 安装包编译成功：$(Test-Path ./installer/GetIPviaWEB-Setup.exe)"
+          Write-Host "✅ Go程序：$(Test-Path GetIPviaWEB.exe)"
+          Write-Host "✅ ISS脚本：$(Test-Path GetIPviaWEB.iss)"
+          Write-Host "✅ 安装包：$(Test-Path ./installer/GetIPviaWEB-Setup.exe)"
         id: final-check
         continue-on-error: false
