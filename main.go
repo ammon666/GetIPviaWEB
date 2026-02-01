@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows/registry"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
@@ -37,6 +38,9 @@ const (
 	LogLevelInfo  = "INFO"
 	LogLevelWarn  = "WARN"
 	LogLevelError = "ERROR"
+
+	// 开机启动注册表路径（用户级，无需管理员权限）
+	runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
 )
 
 // 手动声明Windows API函数（解决未定义问题）
@@ -89,7 +93,7 @@ var (
 	WorkersURL             = "https://getip.ammon.de5.net/api/report"  // 上报地址
 	ViewURLTemplate        = "https://getip.ammon.de5.net/view/%s"    // 浏览器打开地址
 	Timeout                = 10 * time.Second
-	DefaultInterval        = 60 * time.Minute
+	DefaultInterval        = 60 * time.Minute // 上报间隔改为60分钟
 
 	// 全局变量
 	logger                 *Logger // 增强日志器
@@ -142,15 +146,65 @@ func init() {
 	// 6. 检测是否首次运行
 	if _, err := os.Stat(firstRunFlag); os.IsNotExist(err) {
 		isFirstRun = true
-		logger.Info("检测到首次运行，将弹出浏览器")
+		logger.Info("检测到首次运行，将执行：1.添加开机启动 2.弹出浏览器")
+		// 首次运行：自动添加开机启动（优先注册服务，失败则用注册表兜底）
+		if err := addAutoStart(); err != nil {
+			logger.Error("添加开机启动失败：%v", err)
+		} else {
+			logger.Info("开机启动添加成功")
+		}
 	} else {
 		isFirstRun = false
-		logger.Info("非首次运行，跳过浏览器弹窗")
+		logger.Info("非首次运行，跳过浏览器弹窗和开机启动配置")
 	}
 
 	// 7. 生成设备唯一UUID（对齐老代码MD5+MAC生成逻辑）
 	initMachineFixedUUID()
 	logger.Debug("生成设备唯一UUID：%s", machineFixedUUID)
+}
+
+// ========== 新增：开机启动相关函数 ==========
+// addAutoStart 首次运行时添加开机启动（优先服务模式，失败则用注册表）
+func addAutoStart() error {
+	// 第一步：尝试注册为Windows服务（最优方案）
+	if err := installService(); err != nil {
+		logger.Warn("注册服务失败（可能无管理员权限），尝试注册表方式：%v", err)
+		// 第二步：服务注册失败，用注册表Run项兜底（用户级，无需管理员权限）
+		if err := addToRegistryRun(); err != nil {
+			return fmt.Errorf("服务注册和注册表方式均失败：%v", err)
+		}
+		return nil
+	}
+	// 服务注册成功后，自动启动服务
+	if err := startService(); err != nil {
+		logger.Warn("服务注册成功，但启动失败：%v", err)
+	}
+	return nil
+}
+
+// addToRegistryRun 写入用户级注册表Run项，实现开机启动（兜底方案）
+func addToRegistryRun() error {
+	// 获取程序自身路径
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取程序路径失败：%v", err)
+	}
+	// 转义路径（处理空格）
+	exePath = fmt.Sprintf("\"%s\"", exePath)
+
+	// 打开用户级Run注册表项
+	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
+	if err != nil {
+		return fmt.Errorf("打开注册表项失败：%v", err)
+	}
+	defer key.Close()
+
+	// 写入开机启动项（名称为服务名，值为程序路径）
+	if err := key.SetStringValue(serviceName, exePath); err != nil {
+		return fmt.Errorf("写入注册表值失败：%v", err)
+	}
+	logger.Info("已写入用户级注册表Run项：%s -> %s", serviceName, exePath)
+	return nil
 }
 
 // ========== 对齐老代码的核心工具函数 ==========
@@ -709,14 +763,14 @@ func installService() error {
 	}
 	logger.Debug("程序路径：%s", exePath)
 
-	// 创建服务
+	// 创建服务（设置为自动启动）
 	s, err := m.CreateService(
 		serviceName,
 		exePath,
 		mgr.Config{
 			DisplayName: displayName,
 			Description: serviceDesc,
-			StartType:   mgr.StartAutomatic,
+			StartType:   mgr.StartAutomatic, // 关键：设置为自动启动
 		},
 	)
 	if err != nil {
@@ -730,7 +784,7 @@ func installService() error {
 		logger.Warn("注册事件日志失败：%v", err)
 	}
 
-	logger.Info("服务%s安装成功", serviceName)
+	logger.Info("服务%s安装成功（自动启动）", serviceName)
 	return nil
 }
 
@@ -772,7 +826,27 @@ func uninstallService() error {
 		logger.Warn("移除事件日志失败：%v", err)
 	}
 
+	// 卸载时同时删除注册表开机启动项
+	if err := removeFromRegistryRun(); err != nil {
+		logger.Warn("删除注册表开机启动项失败：%v", err)
+	}
+
 	logger.Info("服务%s卸载成功", serviceName)
+	return nil
+}
+
+// removeFromRegistryRun 卸载服务时删除注册表Run项
+func removeFromRegistryRun() error {
+	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
+	if err != nil {
+		return fmt.Errorf("打开注册表项失败：%v", err)
+	}
+	defer key.Close()
+
+	if err := key.DeleteValue(serviceName); err != nil {
+		return fmt.Errorf("删除注册表值失败：%v", err)
+	}
+	logger.Info("已删除用户级注册表Run项：%s", serviceName)
 	return nil
 }
 
