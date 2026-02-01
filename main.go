@@ -190,7 +190,8 @@ func getMacAddress() (string, error) {
 		return "", err
 	}
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp != 0 && !iface.Flags&net.FlagLoopback != 0 {
+		// 修复点：正确判断网卡启用且非回环（!运算符使用错误）
+		if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 {
 			mac := iface.HardwareAddr.String()
 			if mac != "" {
 				return mac, nil
