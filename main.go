@@ -10,8 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"   // 恢复：打开浏览器需要用到，不再是未使用导入
-	"os/user"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -44,18 +43,20 @@ const (
 
 	// 系统卸载注册表路径
 	uninstallKeyPath = `Software\Microsoft\Windows\CurrentVersion\Uninstall`
-	// 默认安装目录
-	defaultInstallDir = `C:\Program Files\IPReportService`
+	// 默认安装目录（统一为GetIPviaWEB）
+	defaultInstallDir = `C:\Program Files\GetIPviaWEB`
 )
 
 // 手动声明Windows API函数
 var (
 	kernel32                = syscall.NewLazyDLL("kernel32.dll")
 	user32                  = syscall.NewLazyDLL("user32.dll")
+	advapi32                = syscall.NewLazyDLL("advapi32.dll") // 新增：获取用户名用
 	procGetConsoleWindow    = kernel32.NewProc("GetConsoleWindow")
 	procShowWindow          = user32.NewProc("ShowWindow")
 	procSetWindowPos        = user32.NewProc("SetWindowPos")
 	procMessageBoxW         = user32.NewProc("MessageBoxW")
+	procGetUserNameW        = advapi32.NewProc("GetUserNameW") // 新增：Windows API获取用户名
 )
 
 // MessageBox 封装Windows消息框
@@ -95,7 +96,7 @@ type ReportPayload struct {
 	TimeStamp  string        `json:"timestamp,omitempty"`
 }
 
-// 全局配置
+// 全局配置（统一为GetIPviaWEB）
 var (
 	// 路径配置（基于安装目录）
 	installDir             string // 安装目录
@@ -103,10 +104,10 @@ var (
 	logPath                string // 日志文件路径
 	firstRunFlag           string // 首次运行标志（安装目录/first_run.flag）
 
-	// 服务核心配置
-	serviceName            = "IPReportService"
-	displayName            = "IP自动上报服务"
-	serviceDesc            = "后台运行，定时上报本机IP信息"
+	// 服务核心配置（统一名称）
+	serviceName            = "GetIPviaWEB"
+	displayName            = "GetIPviaWEB IP自动上报服务"
+	serviceDesc            = "GetIPviaWEB - 后台运行，定时上报本机IP信息"
 
 	// 业务配置
 	APIKey                 = "" // 编译时通过-ldflags注入
@@ -167,7 +168,7 @@ func init() {
 	}
 	logger.Info("APIKey注入成功，安装目录：%s", installDir)
 
-	// 6. 初始化用户名
+	// 6. 初始化用户名（改用Windows API，恢复第一版逻辑）
 	systemUsername = getCurrentUsername()
 	logger.Info("当前系统用户名：%s", systemUsername)
 
@@ -198,25 +199,69 @@ func showConsoleWindow() {
 	}
 }
 
-// ========== 补全缺失的核心功能：打开浏览器 ==========
-// openBrowser 打开指定URL的浏览器（Windows系统）
+// ========== 修复：打开浏览器（改用更稳定的rundll32方式） ==========
+// openBrowser 打开指定URL的浏览器（Windows系统，修复兼容性问题）
 func openBrowser(url string) error {
 	logger.Debug("尝试打开浏览器访问：%s", url)
-	// Windows系统调用默认浏览器
-	cmd := exec.Command("cmd", "/c", "start", "", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 隐藏cmd窗口
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("打开浏览器失败：%v", err)
+	// 改用rundll32 url.dll,FileProtocolHandler 方式，兼容所有Windows版本
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true, // 隐藏执行窗口
+		CreationFlags: CREATE_NO_WINDOW,
 	}
-	// 无需等待浏览器关闭
-	if err := cmd.Process.Release(); err != nil {
-		logger.Warn("释放浏览器进程句柄失败：%v", err)
+	// 执行命令并等待（确保浏览器启动）
+	if err := cmd.Run(); err != nil {
+		// 降级方案：尝试start命令
+		logger.Warn("rundll32打开浏览器失败，尝试降级方案：%v", err)
+		cmd = exec.Command("cmd", "/c", "start", "", url)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("打开浏览器失败（所有方案均失败）：%v", err)
+		}
+		cmd.Process.Release()
 	}
 	logger.Info("浏览器已打开，访问地址：%s", url)
 	return nil
 }
 
-// ========== 安装/卸载核心函数 ==========
+// ========== 修复：获取用户名（恢复第一版Windows API逻辑） ==========
+// getCurrentUsername 获取当前登录用户名（基于Windows API，兼容所有Windows版本）
+func getCurrentUsername() string {
+	// 第一步：尝试Windows API GetUserNameW（最准确）
+	buf := make([]uint16, 1024)
+	bufLen := uint32(len(buf))
+	ret, _, err := procGetUserNameW.Call(
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&bufLen)),
+	)
+	if ret != 0 && bufLen > 0 {
+		username := syscall.UTF16ToString(buf[:bufLen-1])
+		// 处理域用户格式：DOMAIN\username → 只保留username
+		if strings.Contains(username, "\\") {
+			parts := strings.Split(username, "\\")
+			if len(parts) > 1 {
+				return parts[1]
+			}
+		}
+		return username
+	}
+
+	// 降级方案：os/user包（兼容备用）
+	logger.Warn("Windows API获取用户名失败：%v，尝试降级方案", err)
+	currentUser, err := user.Current()
+	if err != nil {
+		logger.Error("降级方案获取用户失败：%v", err)
+		return "未知用户"
+	}
+	// 提取纯用户名（去掉域名）
+	if strings.Contains(currentUser.Username, "\\") {
+		parts := strings.Split(currentUser.Username, "\\")
+		return parts[len(parts)-1]
+	}
+	return currentUser.Username
+}
+
+// ========== 安装/卸载核心函数（统一名称为GetIPviaWEB） ==========
 // Install 完整安装流程：拷贝程序到Program Files + 注册服务 + 写入卸载信息 + 启动服务
 func Install() error {
 	// 兜底校验：管理员权限检查
@@ -228,27 +273,27 @@ func Install() error {
 		return fmt.Errorf("非管理员权限，无法执行安装操作")
 	}
 
-	logger.Info("开始执行安装流程...")
+	logger.Info("开始执行GetIPviaWEB安装流程...")
 
-	// 1. 拷贝程序到默认安装目录
+	// 1. 拷贝程序到默认安装目录（GetIPviaWEB）
 	if err := copyProgramToInstallDir(); err != nil {
 		return fmt.Errorf("拷贝程序失败：%v", err)
 	}
 
-	// 2. 注册Windows服务（自动启动）
+	// 2. 注册Windows服务（自动启动，名称GetIPviaWEB）
 	if err := installService(); err != nil {
 		return fmt.Errorf("注册服务失败：%v", err)
 	}
 
-	// 3. 写入卸载信息到注册表
+	// 3. 写入卸载信息到注册表（名称GetIPviaWEB）
 	if err := writeUninstallInfo(); err != nil {
 		return fmt.Errorf("写入卸载信息失败：%v", err)
 	}
 
 	// 4. 启动服务
 	if err := startService(); err != nil {
-		logger.Warn("服务注册成功，但启动失败：%v", err)
-		MessageBox(0, fmt.Sprintf("服务注册成功，但启动失败：%v\n可手动在服务管理器中启动。", err), "安装警告", 0x30)
+		logger.Warn("GetIPviaWEB服务注册成功，但启动失败：%v", err)
+		MessageBox(0, fmt.Sprintf("GetIPviaWEB服务注册成功，但启动失败：%v\n可手动在服务管理器中启动。", err), "安装警告", 0x30)
 	}
 
 	// 5. 创建首次运行标志
@@ -256,27 +301,27 @@ func Install() error {
 		logger.Warn("创建首次运行标志失败：%v", err)
 	}
 
-	logger.Info("安装完成！服务已注册并启动")
-	MessageBox(0, "服务安装成功！已设置为开机自动启动。", "安装完成", 0x40)
+	logger.Info("GetIPviaWEB安装完成！服务已注册并启动")
+	MessageBox(0, "GetIPviaWEB服务安装成功！已设置为开机自动启动。", "安装完成", 0x40)
 	return nil
 }
 
 // Uninstall 完整卸载流程：停止服务 + 删除服务 + 清理注册表 + 删除安装目录
 func Uninstall() error {
-	logger.Info("开始执行卸载流程...")
+	logger.Info("开始执行GetIPviaWEB卸载流程...")
 
 	// 1. 检查管理员权限（仅日志，不弹窗）
 	if !isAdmin() {
-		logger.Error("卸载需要管理员权限，请右键以管理员身份运行")
-		return fmt.Errorf("卸载需要管理员权限，请右键以管理员身份运行")
+		logger.Error("GetIPviaWEB卸载需要管理员权限，请右键以管理员身份运行")
+		return fmt.Errorf("GetIPviaWEB卸载需要管理员权限，请右键以管理员身份运行")
 	}
 
 	// 2. 停止服务（自动处理异常，不弹窗）
 	if err := stopService(); err != nil {
 		if !strings.Contains(err.Error(), "服务未运行") && !strings.Contains(err.Error(), "指定的服务未安装") {
-			logger.Warn("停止服务失败：%v", err)
+			logger.Warn("停止GetIPviaWEB服务失败：%v", err)
 		} else {
-			logger.Info("服务未运行，跳过停止操作")
+			logger.Info("GetIPviaWEB服务未运行，跳过停止操作")
 		}
 	}
 
@@ -291,33 +336,33 @@ func Uninstall() error {
 	s, err := m.OpenService(serviceName)
 	if err == nil {
 		if err := s.Delete(); err != nil {
-			logger.Error("删除服务失败：%v", err)
-			return fmt.Errorf("删除服务失败：%v", err)
+			logger.Error("删除GetIPviaWEB服务失败：%v", err)
+			return fmt.Errorf("删除GetIPviaWEB服务失败：%v", err)
 		}
 		s.Close()
-		logger.Info("服务已删除")
+		logger.Info("GetIPviaWEB服务已删除")
 	} else {
-		logger.Info("服务不存在，跳过删除操作")
+		logger.Info("GetIPviaWEB服务不存在，跳过删除操作")
 	}
 
 	// 4. 清理卸载注册表项（自动处理，不弹窗）
 	if err := deleteUninstallInfo(); err != nil {
-		logger.Warn("清理卸载信息失败：%v", err)
+		logger.Warn("清理GetIPviaWEB卸载信息失败：%v", err)
 	}
 
 	// 5. 删除安装目录（自动处理，不弹窗）
 	if err := os.RemoveAll(defaultInstallDir); err != nil {
-		logger.Error("删除安装目录失败：%v", err)
-		return fmt.Errorf("删除安装目录失败：%v", err)
+		logger.Error("删除GetIPviaWEB安装目录失败：%v", err)
+		return fmt.Errorf("删除GetIPviaWEB安装目录失败：%v", err)
 	}
 
-	logger.Info("卸载完成！所有文件和服务已清理")
+	logger.Info("GetIPviaWEB卸载完成！所有文件和服务已清理")
 	return nil
 }
 
-// copyProgramToInstallDir 拷贝当前程序到默认安装目录
+// copyProgramToInstallDir 拷贝当前程序到默认安装目录（GetIPviaWEB）
 func copyProgramToInstallDir() error {
-	// 创建默认安装目录
+	// 创建默认安装目录（GetIPviaWEB）
 	if err := os.MkdirAll(defaultInstallDir, 0700); err != nil {
 		return err
 	}
@@ -328,7 +373,7 @@ func copyProgramToInstallDir() error {
 		return err
 	}
 
-	// 目标程序路径
+	// 目标程序路径（GetIPviaWEB目录）
 	dstPath := filepath.Join(defaultInstallDir, filepath.Base(srcPath))
 
 	// 如果已存在，先删除
@@ -359,7 +404,7 @@ func copyProgramToInstallDir() error {
 	return nil
 }
 
-// writeUninstallInfo 写入卸载信息到注册表
+// writeUninstallInfo 写入卸载信息到注册表（名称GetIPviaWEB）
 func writeUninstallInfo() error {
 	// 打开卸载注册表项（LOCAL_MACHINE需要管理员权限）
 	key, err := registry.OpenKey(registry.LOCAL_MACHINE, uninstallKeyPath, registry.WRITE)
@@ -368,7 +413,7 @@ func writeUninstallInfo() error {
 	}
 	defer key.Close()
 
-	// 创建当前程序的卸载子项
+	// 创建当前程序的卸载子项（GetIPviaWEB）
 	uninstallSubKey, _, err := registry.CreateKey(key, serviceName, registry.WRITE)
 	if err != nil {
 		return err
@@ -380,7 +425,7 @@ func writeUninstallInfo() error {
 	fields := map[string]string{
 		"DisplayName":     displayName,
 		"DisplayVersion":  "1.0.0",
-		"Publisher":       "IPReport Service",
+		"Publisher":       "GetIPviaWEB",
 		"UninstallString": uninstallExe,
 		"DisplayIcon":     filepath.Join(defaultInstallDir, filepath.Base(os.Args[0])),
 		"NoModify":        "1",
@@ -397,7 +442,7 @@ func writeUninstallInfo() error {
 	return nil
 }
 
-// deleteUninstallInfo 删除注册表中的卸载信息
+// deleteUninstallInfo 删除注册表中的卸载信息（GetIPviaWEB）
 func deleteUninstallInfo() error {
 	// 删除卸载注册表项
 	err := registry.DeleteKey(registry.LOCAL_MACHINE, filepath.Join(uninstallKeyPath, serviceName))
@@ -405,7 +450,7 @@ func deleteUninstallInfo() error {
 		return err
 	}
 
-	logger.Info("卸载注册表项已删除")
+	logger.Info("GetIPviaWEB卸载注册表项已删除")
 	return nil
 }
 
@@ -485,22 +530,6 @@ func getPhysicalNicMAC() string {
 
 	logger.Warn("未找到有效物理网卡MAC地址")
 	return ""
-}
-
-// getCurrentUsername 获取当前登录用户名
-func getCurrentUsername() string {
-	currentUser, err := user.Current()
-	if err != nil {
-		logger.Error("获取当前用户失败：%v", err)
-		return "未知用户"
-	}
-
-	// 提取纯用户名（去掉域名）
-	if strings.Contains(currentUser.Username, "\\") {
-		parts := strings.Split(currentUser.Username, "\\")
-		return parts[len(parts)-1]
-	}
-	return currentUser.Username
 }
 
 // isPrivateIPv4 判断是否为私有IP
@@ -614,10 +643,10 @@ func reportIP() error {
 	return nil
 }
 
-// ========== 服务安装/启停相关函数 ==========
-// installService 注册Windows服务
+// ========== 服务安装/启停相关函数（统一名称为GetIPviaWEB） ==========
+// installService 注册Windows服务（名称GetIPviaWEB）
 func installService() error {
-	logger.Debug("开始注册Windows服务")
+	logger.Debug("开始注册GetIPviaWEB Windows服务")
 	m, err := mgr.Connect()
 	if err != nil {
 		return err
@@ -652,14 +681,14 @@ func installService() error {
 
 	// 注册事件日志
 	if err := eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
-		logger.Warn("注册事件日志失败：%v", err)
+		logger.Warn("注册GetIPviaWEB事件日志失败：%v", err)
 	}
 
 	logger.Info("服务%s注册成功（自动启动）", serviceName)
 	return nil
 }
 
-// startService 启动Windows服务
+// startService 启动Windows服务（GetIPviaWEB）
 func startService() error {
 	logger.Debug("开始启动服务：%s", serviceName)
 	m, err := mgr.Connect()
@@ -690,7 +719,7 @@ func startService() error {
 	return nil
 }
 
-// stopService 停止Windows服务
+// stopService 停止Windows服务（GetIPviaWEB）
 func stopService() error {
 	logger.Debug("开始停止服务：%s", serviceName)
 	m, err := mgr.Connect()
@@ -822,9 +851,9 @@ func (l *Logger) rotateLogIfNeeded() {
 }
 
 // ========== 服务运行相关 ==========
-// runService 服务主循环（补全首次启动打开浏览器+定时上报）
+// runService 服务主循环（修复首次启动打开浏览器+定时上报）
 func runService() {
-	logger.Info("服务开始运行，上报间隔：%v", reportInterval)
+	logger.Info("GetIPviaWEB服务开始运行，上报间隔：%v", reportInterval)
 
 	// 首次运行立即上报 + 打开浏览器
 	if isFirstRun {
@@ -837,6 +866,11 @@ func runService() {
 			viewURL := fmt.Sprintf(ViewURLTemplate, machineFixedUUID)
 			if err := openBrowser(viewURL); err != nil {
 				logger.Warn("首次运行打开浏览器失败：%v", err)
+				// 弹窗提示用户手动访问
+				MessageBox(0, 
+					fmt.Sprintf("自动打开浏览器失败，请手动访问：%s", viewURL), 
+					"提示", 
+					0x40) // 0x40 = MB_ICONINFORMATION
 			}
 			// 3. 更新首次运行标志
 			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0600); err != nil {
@@ -869,28 +903,28 @@ func main() {
 		switch os.Args[1] {
 		case "install":
 			if err := Install(); err != nil {
-				logger.Error("安装失败：%v", err)
+				logger.Error("GetIPviaWEB安装失败：%v", err)
 				os.Exit(1)
 			}
 			os.Exit(0)
 
 		case "uninstall":
 			if err := Uninstall(); err != nil {
-				logger.Error("卸载失败：%v", err)
+				logger.Error("GetIPviaWEB卸载失败：%v", err)
 				os.Exit(1)
 			}
 			os.Exit(0)
 
 		case "start":
 			if err := startService(); err != nil {
-				logger.Error("启动服务失败：%v", err)
+				logger.Error("启动GetIPviaWEB服务失败：%v", err)
 				os.Exit(1)
 			}
 			os.Exit(0)
 
 		case "stop":
 			if err := stopService(); err != nil {
-				logger.Error("停止服务失败：%v", err)
+				logger.Error("停止GetIPviaWEB服务失败：%v", err)
 				os.Exit(1)
 			}
 			os.Exit(0)
@@ -910,34 +944,34 @@ func main() {
 
 	if isService {
 		// 以服务模式运行
-		if err := svc.Run(serviceName, &ipReportService{}); err != nil {
-			logger.Error("服务运行失败：%v", err)
+		if err := svc.Run(serviceName, &getIPviaWEBService{}); err != nil {
+			logger.Error("GetIPviaWEB服务运行失败：%v", err)
 			os.Exit(1)
 		}
 	} else {
 		// 控制台模式运行（调试用）
-		logger.Info("以控制台模式运行（调试）")
+		logger.Info("以控制台模式运行GetIPviaWEB（调试）")
 		showConsoleWindow()
 		runService()
 	}
 }
 
-// ipReportService 服务实现
-type ipReportService struct{}
+// getIPviaWEBService 服务实现（统一名称）
+type getIPviaWEBService struct{}
 
-func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+func (s *getIPviaWEBService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	const acceptedCmds = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPauseAndContinue
 
 	// 设置服务状态
 	changes <- svc.Status{State: svc.StartPending, WaitHint: 2000}
-	logger.Info("服务启动中...")
+	logger.Info("GetIPviaWEB服务启动中...")
 
 	// 启动业务逻辑
 	go runService()
 
 	// 设置服务为运行状态
 	changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds, WaitHint: 1000}
-	logger.Info("服务已启动，等待控制指令")
+	logger.Info("GetIPviaWEB服务已启动，等待控制指令")
 
 	// 处理服务控制指令
 loop:
@@ -949,7 +983,7 @@ loop:
 				changes <- c.CurrentStatus
 
 			case svc.Stop, svc.Shutdown:
-				logger.Info("收到停止/关机指令，服务即将退出")
+				logger.Info("收到停止/关机指令，GetIPviaWEB服务即将退出")
 				changes <- svc.Status{State: svc.StopPending, WaitHint: 2000}
 				break loop
 
@@ -968,7 +1002,7 @@ loop:
 		}
 	}
 
-	logger.Info("服务已停止")
+	logger.Info("GetIPviaWEB服务已停止")
 	changes <- svc.Status{State: svc.Stopped, Accepts: acceptedCmds, WaitHint: 1000}
 	return false, 0
 }

@@ -1,4 +1,4 @@
-name: Build IPReportService
+name: Build GetIPviaWEB
 on:
   push:
     branches: [ main ]
@@ -58,16 +58,16 @@ jobs:
           $ErrorActionPreference = 'Continue'
           
           Write-Host "🔧 开始编译Go程序（注入APIKey）"
-          go build -o IPReportService.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
+          go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ Go程序编译失败，退出码：$LASTEXITCODE"
               exit 1
           }
-          if (Test-Path "IPReportService.exe") {
-              $fileSize = (Get-Item IPReportService.exe).Length
+          if (Test-Path "GetIPviaWEB.exe") {
+              $fileSize = (Get-Item GetIPviaWEB.exe).Length
               Write-Host "✅ 编译成功，文件大小：$fileSize 字节"
           } else {
-              Write-Host "❌ 编译失败，未生成IPReportService.exe"
+              Write-Host "❌ 编译失败，未生成GetIPviaWEB.exe"
               exit 1
           }
         id: build-exe
@@ -118,7 +118,7 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成Inno Setup安装包脚本 ==========
+      # ========== 生成Inno Setup安装包脚本（统一名称为GetIPviaWEB） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
@@ -126,26 +126,26 @@ jobs:
           
           Write-Host "🔧 开始生成ISS脚本（适配新版Inno Setup+管理员校验+静默卸载）"
           # 清空旧文件
-          if (Test-Path "IPReportService.iss") { Remove-Item "IPReportService.iss" -Force }
+          if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 逐行写入ISS内容（核心修复：替换废弃的CheckWin32Version）
-          " [Setup]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Force
-          " AppName=IP自动上报服务" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " AppVersion=1.0.0" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " DefaultDirName={pf}\IPReportService" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " DefaultGroupName=IPReportService" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " OutputDir=./installer" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          # 逐行写入ISS内容（统一名称为GetIPviaWEB）
+          " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Force
+          " AppName=GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " DefaultDirName={pf}\GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " DefaultGroupName=GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " OutputDir=./installer" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # 文件名添加管理员权限提示
-          " OutputBaseFilename=IPReportService-Setup(需要管理员权限)" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Compression=lzma" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " SolidCompression=yes" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " OutputBaseFilename=GetIPviaWEB-Setup(需要管理员权限)" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Compression=lzma" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # 全局管理员权限（新版Inno Setup推荐配置）
-          " PrivilegesRequired=admin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " PrivilegesRequired=admin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # 静默卸载配置
           " UninstallSilent=yes"                # 卸载静默执行
           " UninstallNoConfirm=yes"             # 卸载不弹确认框
-          " UninstallDisplayIcon={app}\IPReportService.exe"
-          " UninstallDisplayName=IP自动上报服务"
+          " UninstallDisplayIcon={app}\GetIPviaWEB.exe"
+          " UninstallDisplayName=GetIPviaWEB"
           " UninstallShowProgress=yes"          # 显示卸载进度
           " UninstallProgressFlags=nevershowmsg" # 不显示卸载消息弹窗
           # 界面控制
@@ -154,65 +154,65 @@ jobs:
           " DisableReadyPage=yes"
           " DisableFinishedPage=yes"
           " DisableDirEdit=no"
-          " DirExistsWarning=yes" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " DirExistsWarning=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # 进程管理
-          " SetupMutex=IPReportService-InstallMutex" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " CloseApplications=yes" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " CloseApplicationsFilter=IPReportService.exe" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " SetupMutex=GetIPviaWEB-InstallMutex" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " CloseApplications=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " CloseApplicationsFilter=GetIPviaWEB.exe" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [Files]段
-          " [Files]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Source: ""IPReportService.exe""; DestDir: ""{app}""; Flags: ignoreversion; Permissions: users-full" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion; Permissions: users-full" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [Icons]段
-          " [Icons]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Name: ""{group}\IP自动上报服务""; Filename: ""{app}\IPReportService.exe""" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Name: ""{group}\卸载IP自动上报服务""; Filename: ""{uninstallexe}""" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " [Icons]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Name: ""{group}\GetIPviaWEB""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Name: ""{group}\卸载GetIPviaWEB""; Filename: ""{uninstallexe}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [Run]段（安装后执行）
-          " [Run]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\IPReportService.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册GetIPviaWEB服务""; Flags: postinstall" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [UninstallRun]段（静默卸载）
-          " [UninstallRun]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Filename: ""taskkill.exe""; Parameters: ""/F /IM IPReportService.exe""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\IPReportService.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [UninstallDelete]段
-          " [UninstallDelete]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [Code]段（核心修复：移除废弃的CheckWin32Version，仅保留IsAdminLoggedOn）
-          " [Code]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " function InitializeSetup(): Boolean;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " var" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   IsAdmin: Boolean;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " begin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   // 新版Inno Setup直接使用IsAdminLoggedOn()校验管理员权限（无需系统版本校验）" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   IsAdmin := IsAdminLoggedOn();" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   if not IsAdmin then" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   begin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "     // 弹出错误提示框" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "     MsgBox('当前未以管理员权限运行安装包！' + #13#10 + '请右键点击安装包，选择「以管理员身份运行」后重试。', mbError, MB_OK);" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "     // 返回False终止安装" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "     Result := False;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   end" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   else" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   begin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "     // 管理员权限正常，继续安装" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "     Result := True;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   end;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          " end;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          " [Code]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " function InitializeSetup(): Boolean;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " var" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   IsAdmin: Boolean;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   // 新版Inno Setup直接使用IsAdminLoggedOn()校验管理员权限（无需系统版本判断）" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   IsAdmin := IsAdminLoggedOn();" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   if not IsAdmin then" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     // 弹出错误提示框" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     MsgBox('当前未以管理员权限运行安装包！' + #13#10 + '请右键点击安装包，选择「以管理员身份运行」后重试。', mbError, MB_OK);" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     // 返回False终止安装" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     Result := False;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   end" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   else" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     // 管理员权限正常，继续安装" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     Result := True;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   end;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " end;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # 转换换行符为CRLF（Inno Setup要求）
-          $content = Get-Content IPReportService.iss -Raw
-          $content -replace "`n", "`r`n" | Set-Content IPReportService.iss -Encoding UTF8 -Force
+          $content = Get-Content GetIPviaWEB.iss -Raw
+          $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
           
           Write-Host "✅ ISS脚本生成成功（适配新版Inno Setup）"
         id: generate-iss
@@ -228,15 +228,15 @@ jobs:
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
           
           # 编译安装包
-          $issPath = (Resolve-Path IPReportService.iss).Path
-          & ISCC.exe /O"./installer" /F"IPReportService-Setup(需要管理员权限)" "$issPath" 2>&1
+          $issPath = (Resolve-Path GetIPviaWEB.iss).Path
+          & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup(需要管理员权限)" "$issPath" 2>&1
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ 安装包编译失败，退出码：$LASTEXITCODE"
               exit 1
           }
           
           # 验证安装包
-          $setupFile = "./installer/IPReportService-Setup(需要管理员权限).exe"
+          $setupFile = "./installer/GetIPviaWEB-Setup(需要管理员权限).exe"
           if (Test-Path $setupFile) {
               $fileSize = (Get-Item $setupFile).Length
               Write-Host "✅ 安装包编译成功，文件大小：$fileSize 字节"
@@ -251,16 +251,16 @@ jobs:
       - name: 上传可执行文件
         uses: actions/upload-artifact@v4
         with:
-          name: IPReportService-Windows-Exe
-          path: IPReportService.exe
+          name: GetIPviaWEB-Windows-Exe
+          path: GetIPviaWEB.exe
           retention-days: 7
         id: upload-exe
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
         with:
-          name: IPReportService-Windows-Setup
-          path: ./installer/IPReportService-Setup(需要管理员权限).exe
+          name: GetIPviaWEB-Windows-Setup
+          path: ./installer/GetIPviaWEB-Setup(需要管理员权限).exe
           retention-days: 7
         id: upload-installer
 
@@ -270,7 +270,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           
           Write-Host "🎉 全流程执行完成！"
-          Write-Host "✅ Go程序：$(Test-Path IPReportService.exe)"
-          Write-Host "✅ ISS脚本：$(Test-Path IPReportService.iss)"
-          Write-Host "✅ 安装包：$(Test-Path ./installer/IPReportService-Setup(需要管理员权限).exe)"
+          Write-Host "✅ Go程序：$(Test-Path GetIPviaWEB.exe)"
+          Write-Host "✅ ISS脚本：$(Test-Path GetIPviaWEB.iss)"
+          Write-Host "✅ 安装包：$(Test-Path ./installer/GetIPviaWEB-Setup(需要管理员权限).exe)"
         id: final-check
