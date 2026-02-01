@@ -6,47 +6,35 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/lxn/walk"
-	. "github.com/lxn/walk/declarative"
 )
 
-// 全局窗口变量
-var mainWindow *walk.MainWindow
-
 func main() {
-	// 创建UUID示例（验证uuid依赖）
+	// 1. 生成UUID（保留原功能）
 	appID := uuid.New().String()
+	fmt.Println("==================== IP监控工具 ====================")
+	fmt.Printf("App唯一标识（UUID）：%s\n", appID)
+	fmt.Printf("检测时间：%s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Println("----------------------------------------------------")
 
-	// 获取本机IP示例
+	// 2. 获取本机非回环IPv4地址（保留原核心功能）
 	localIP := getLocalIP()
+	fmt.Printf("本机有效IPv4地址：%s\n", localIP)
+	fmt.Println("====================================================")
 
-	// 构建Windows GUI窗口（验证walk依赖）
-	if err := MainWindow{
-		Title:   fmt.Sprintf("IP Monitor - %s", appID),
-		Size:    Size{Width: 400, Height: 300},
-		Layout:  VBox{},
-		Children: []Widget{
-			TextEdit{
-				ReadOnly: true,
-				Text:     fmt.Sprintf("本机IP地址：%s\n检测时间：%s\nAppID：%s", localIP, time.Now().Format("2006-01-02 15:04:05"), appID),
-			},
-		},
-	}.Create(&mainWindow); err != nil {
-		walk.MsgBox(nil, "错误", fmt.Sprintf("启动失败：%v", err), walk.MsgBoxIconError)
-		return
-	}
-
-	// 运行窗口
-	mainWindow.Run()
+	// 3. 暂停程序（控制台窗口不立即关闭，方便查看结果）
+	fmt.Println("\n按任意键退出...")
+	var input string
+	fmt.Scanln(&input)
 }
 
-// getLocalIP 获取本机非回环IP地址
+// getLocalIP 获取本机非回环IPv4地址（逻辑与原GUI版本一致）
 func getLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return "获取失败：" + err.Error()
+		return fmt.Sprintf("获取失败：%v", err)
 	}
 
+	// 遍历所有网卡地址，筛选非回环IPv4
 	for _, addr := range addrs {
 		ipNet, ok := addr.(*net.IPNet)
 		if ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
@@ -54,5 +42,5 @@ func getLocalIP() string {
 		}
 	}
 
-	return "未检测到有效IP"
+	return "未检测到有效IPv4地址（仅回环地址/无网络）"
 }

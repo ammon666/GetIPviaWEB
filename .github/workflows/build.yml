@@ -11,12 +11,12 @@ on:
 # 定义任务
 jobs:
   build-windows:
-    # 指定运行环境为Windows（walk库仅支持Windows编译）
+    # 指定运行环境为Windows
     runs-on: windows-latest
-    # 全局环境变量：配置Go模块代理，解决认证/拉取失败问题
+    # 全局环境变量：配置Go模块代理，确保UUID依赖拉取稳定
     env:
-      GOPROXY: "https://goproxy.cn,direct"  # 核心：使用公共代理，优先从代理拉取依赖
-      GO111MODULE: "on"                     # 强制开启Go模块模式
+      GOPROXY: "https://goproxy.cn,direct"
+      GO111MODULE: "on"
 
     # 任务步骤
     steps:
@@ -28,20 +28,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # 指定Go版本（需与模块版本兼容）
           go-version: '1.21'
-          # 缓存Go模块，加速后续构建
           cache: true
 
-      # 步骤3：整理依赖（核心：通过代理拉取，无认证提示）
+      # 步骤3：整理依赖（仅拉取UUID，无认证问题）
       - name: Install and tidy dependencies
         run: go mod tidy
 
-      # 步骤4：编译可执行文件（带Windows GUI参数）
+      # 步骤4：编译控制台可执行文件（移除Windows GUI参数）
       - name: Build Windows executable
-        run: go build -ldflags="-s -w -H windowsgui" -o ip-monitor.exe
+        run: go build -ldflags="-s -w" -o ip-monitor.exe
 
-      # 可选步骤：上传编译产物（方便下载）
+      # 可选步骤：上传编译产物
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
