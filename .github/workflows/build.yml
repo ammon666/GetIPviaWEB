@@ -126,59 +126,59 @@ jobs:
               Remove-Item "GetIPviaWEB.iss" -Force 
           }
           
-          # 使用 Here-String 生成完整的ISS内容（保留中文）
-          $issContent = @'
-[Setup]
-AppName=GetIPviaWEB
-AppVersion=1.0.0
-DefaultDirName={pf}\GetIPviaWEB
-DefaultGroupName=GetIPviaWEB
-OutputDir=./installer
-OutputBaseFilename=GetIPviaWEB-Setup
-Compression=lzma
-SolidCompression=yes
-PrivilegesRequired=admin
-SetupMutex=GetIPviaWEB-InstallMutex
-CloseApplications=yes
-CloseApplicationsFilter=GetIPviaWEB.exe
-
-[Files]
-Source: "GetIPviaWEB.exe"; DestDir: "{app}"
-
-[Icons]
-Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"
-Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"; Parameters: "/VERYSILENT"
-
-[Run]
-Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Flags: runhidden
-
-[UninstallRun]
-Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait
-Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait
-
-[UninstallDelete]
-Type: filesanddirs; Name: "{app}"
-
-[Code]
-function InitializeSetup(): Boolean;
-var
-  IsAdmin: Boolean;
-begin
-  IsAdmin := IsAdminLoggedOn();
-  if not IsAdmin then
-  begin
-    MsgBox('请以管理员身份运行安装包！' + #13#10 + '右键 → 以管理员身份运行', mbError, MB_OK);
-    Result := False;
-  end
-  else
-  begin
-    Result := True;
-  end;
-end;
-'@
+          # 创建ISS内容（使用数组拼接避免YAML冲突）
+          $issLines = @(
+            '[Setup]',
+            'AppName=GetIPviaWEB',
+            'AppVersion=1.0.0',
+            'DefaultDirName={pf}\GetIPviaWEB',
+            'DefaultGroupName=GetIPviaWEB',
+            'OutputDir=./installer',
+            'OutputBaseFilename=GetIPviaWEB-Setup',
+            'Compression=lzma',
+            'SolidCompression=yes',
+            'PrivilegesRequired=admin',
+            'SetupMutex=GetIPviaWEB-InstallMutex',
+            'CloseApplications=yes',
+            'CloseApplicationsFilter=GetIPviaWEB.exe',
+            '',
+            '[Files]',
+            'Source: "GetIPviaWEB.exe"; DestDir: "{app}"',
+            '',
+            '[Icons]',
+            'Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"',
+            'Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"; Parameters: "/VERYSILENT"',
+            '',
+            '[Run]',
+            'Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Flags: runhidden',
+            '',
+            '[UninstallRun]',
+            'Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait',
+            'Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait',
+            '',
+            '[UninstallDelete]',
+            'Type: filesanddirs; Name: "{app}"',
+            '',
+            '[Code]',
+            'function InitializeSetup(): Boolean;',
+            'var',
+            '  IsAdmin: Boolean;',
+            'begin',
+            '  IsAdmin := IsAdminLoggedOn();',
+            '  if not IsAdmin then',
+            '  begin',
+            '    MsgBox(''请以管理员身份运行安装包！'' + #13#10 + ''右键 → 以管理员身份运行'', mbError, MB_OK);',
+            '    Result := False;',
+            '  end',
+            '  else',
+            '  begin',
+            '    Result := True;',
+            '  end;',
+            'end;'
+          )
           
-          # 统一使用CRLF换行符（Windows标准）
-          $issContent = $issContent -replace "`r`n", "`n" -replace "`n", "`r`n"
+          # 使用CRLF连接所有行
+          $issContent = $issLines -join "`r`n"
           
           # 使用UTF-8 with BOM编码写入（Inno Setup要求）
           $utf8WithBom = New-Object System.Text.UTF8Encoding $true
