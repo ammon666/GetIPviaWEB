@@ -24,14 +24,11 @@ import (
 var (
 	// 日志路径（服务模式下ProgramData更易访问）
 	logPath = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "service.log")
-	// 服务配置（适配kardianos/service v1.2.1的正确字段）
+	// 服务配置（仅保留必选字段，避免版本兼容问题）
 	serviceConfig = &service.Config{
-		Name:        "GetIPviaWEBService",       // 服务名称（唯一）
+		Name:        "GetIPviaWEBService",       // 服务名称（唯一，不可包含空格）
 		DisplayName: "IP监控自动上报服务",        // 服务显示名称
 		Description: "开机自动运行（未登录也可），定时上报IP信息", // 服务描述
-		StartType:   "auto",                     // 启动类型：auto（自动）/manual（手动）/disabled（禁用）
-		User:        "",                         // 运行用户（空=Local System，无需密码）
-		Password:    "",                         // 用户密码（User为空时无需设置）
 	}
 
 	// Windows API常量（修正类型匹配问题）
@@ -156,6 +153,22 @@ func hideConsoleWindow() {
 		// 修复：SW_HIDE转换为uintptr类型
 		showWindow.Call(hwnd, uintptr(SW_HIDE))
 	}
+}
+
+// setServiceAutoStart 通过sc命令设置服务为自动启动（核心：开机未登录运行）
+func setServiceAutoStart(serviceName string) error {
+	// sc config 服务名 start= auto（注意start=后有空格）
+	cmd := exec.Command("sc", "config", serviceName, "start=", "auto")
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: uint32(CREATE_NO_WINDOW),
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("设置自动启动失败：%v，输出：%s", err, string(output))
+	}
+	writeLog("【服务】成功设置服务为自动启动")
+	return nil
 }
 
 // openBrowser 打开浏览器（兼容服务模式：登录后才显示，修复类型转换）
@@ -401,7 +414,11 @@ func main() {
 				fmt.Printf("【错误】安装服务失败（需管理员权限）：%v\n", err)
 				os.Exit(1)
 			}
-			fmt.Println("【成功】服务安装完成（开机未登录自动运行）")
+			// 关键：安装后立即设置为自动启动（确保开机未登录运行）
+			if err := setServiceAutoStart(serviceConfig.Name); err != nil {
+				fmt.Printf("【警告】设置自动启动失败：%v\n", err)
+			}
+			fmt.Println("【成功】服务安装完成（已设置开机自动运行）")
 		case "uninstall":
 			if err := svc.Uninstall(); err != nil {
 				fmt.Printf("【错误】卸载服务失败（需管理员权限）：%v\n", err)
