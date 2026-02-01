@@ -24,21 +24,20 @@ import (
 var (
 	// 日志路径（服务模式下ProgramData更易访问）
 	logPath = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "service.log")
-	// 服务配置
+	// 服务配置（适配kardianos/service v1.2.1的正确字段）
 	serviceConfig = &service.Config{
 		Name:        "GetIPviaWEBService",       // 服务名称（唯一）
 		DisplayName: "IP监控自动上报服务",        // 服务显示名称
 		Description: "开机自动运行（未登录也可），定时上报IP信息", // 服务描述
-		StartType:   service.StartAutomatic,     // 启动类型：自动（开机未登录运行）
-		// 服务运行权限（LocalSystem，足够获取网卡信息）
-		Username: "",
-		Password: "",
+		StartType:   "auto",                     // 启动类型：auto（自动）/manual（手动）/disabled（禁用）
+		User:        "",                         // 运行用户（空=Local System，无需密码）
+		Password:    "",                         // 用户密码（User为空时无需设置）
 	}
 
-	// Windows API常量
+	// Windows API常量（修正类型匹配问题）
 	SIGBREAK        = syscall.Signal(21)
-	CREATE_NO_WINDOW = 0x08000000
-	SW_HIDE         = 0
+	CREATE_NO_WINDOW = 0x08000000 // uint32类型
+	SW_HIDE         = 0           // uintptr类型
 
 	// 业务常量
 	WorkersURL      = "https://getip.ammon.de5.net/api/report"
@@ -145,20 +144,27 @@ func writeLog(content string) {
 	_, _ = f.WriteString(logContent)
 }
 
-// hideConsoleWindow 手动运行时隐藏控制台
+// hideConsoleWindow 手动运行时隐藏控制台（修复类型转换）
 func hideConsoleWindow() {
-	hwnd, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow").Call()
+	kernel32 := syscall.NewLazyDLL("kernel32.dll")
+	user32 := syscall.NewLazyDLL("user32.dll")
+	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
+	showWindow := user32.NewProc("ShowWindow")
+
+	hwnd, _, _ := getConsoleWindow.Call()
 	if hwnd != 0 {
-		syscall.NewLazyDLL("user32.dll").NewProc("ShowWindow").Call(hwnd, SW_HIDE)
+		// 修复：SW_HIDE转换为uintptr类型
+		showWindow.Call(hwnd, uintptr(SW_HIDE))
 	}
 }
 
-// openBrowser 打开浏览器（兼容服务模式：登录后才显示）
+// openBrowser 打开浏览器（兼容服务模式：登录后才显示，修复类型转换）
 func openBrowser(url string) error {
 	cmd := exec.Command("cmd", "/c", "start", "", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: CREATE_NO_WINDOW,
+		// 修复：CREATE_NO_WINDOW转换为uint32类型
+		CreationFlags: uint32(CREATE_NO_WINDOW),
 	}
 	cmd.Stdout = nil
 	cmd.Stderr = nil
