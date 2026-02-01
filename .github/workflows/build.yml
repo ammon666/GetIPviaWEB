@@ -107,8 +107,8 @@ jobs:
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Write-Host "🔧 生成Inno Setup配置脚本（GetIPviaWEB.iss）"
-          # 写入ISS脚本（确保编码正确，换行符兼容）
-          $issContent = @'
+          # ========== 修复第112行YAML语法错误：改用Here-String规范格式 ==========
+          $issContent = @"
 [Setup]
 AppName=GetIPviaWEB Service
 AppVersion=1.0.0
@@ -135,7 +135,7 @@ Filename: "{app}\GetIPviaWEB.exe"; Parameters: "/uninstall"; Flags: skipifdoesnt
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
-'@
+"@
           # 写入文件（使用CRLF换行符，兼容Inno Setup）
           $issContent | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -NewLine CRLF
           
