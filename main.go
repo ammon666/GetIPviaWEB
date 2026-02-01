@@ -52,12 +52,14 @@ const (
 var (
 	kernel32                = syscall.NewLazyDLL("kernel32.dll")
 	user32                  = syscall.NewLazyDLL("user32.dll")
+	shell32                 = syscall.NewLazyDLL("shell32.dll")  // 新增：打开浏览器用
 	advapi32                = syscall.NewLazyDLL("advapi32.dll") // 新增：获取用户名用
 	procGetConsoleWindow    = kernel32.NewProc("GetConsoleWindow")
 	procShowWindow          = user32.NewProc("ShowWindow")
 	procSetWindowPos        = user32.NewProc("SetWindowPos")
 	procMessageBoxW         = user32.NewProc("MessageBoxW")
-	procGetUserNameW        = advapi32.NewProc("GetUserNameW") // 新增：Windows API获取用户名
+	procShellExecuteW       = shell32.NewProc("ShellExecuteW")   // 新增：打开URL
+	procGetUserNameW        = advapi32.NewProc("GetUserNameW")   // 新增：Windows API获取用户名
 )
 
 // MessageBox 封装Windows消息框
@@ -200,53 +202,48 @@ func showConsoleWindow() {
 	}
 }
 
-// ========== 修复：打开浏览器（使用最稳定的cmd start方式） ==========
-// openBrowser 打开指定URL的浏览器（Windows系统，多重方案确保兼容性）
+// ========== 修复：打开浏览器（使用Windows API ShellExecuteW，支持从服务启动） ==========
+// openBrowser 打开指定URL的浏览器（Windows服务环境兼容）
 func openBrowser(url string) error {
 	logger.Debug("尝试打开浏览器访问：%s", url)
 	
-	// 方案1：使用 cmd /c start（最稳定，Windows通用方案）
-	// 注意：start 后面必须有一个空字符串作为窗口标题参数
-	cmd := exec.Command("cmd", "/c", "start", "", url)
+	// 方案1：使用 ShellExecuteW API（最可靠，支持从服务中打开用户桌面程序）
+	// 这是唯一能从Windows服务中成功打开用户浏览器的方法
+	operation, _ := syscall.UTF16PtrFromString("open")
+	file, _ := syscall.UTF16PtrFromString(url)
+	
+	ret, _, err := procShellExecuteW.Call(
+		0,                          // hwnd
+		uintptr(unsafe.Pointer(operation)), // lpOperation: "open"
+		uintptr(unsafe.Pointer(file)),      // lpFile: URL
+		0,                          // lpParameters
+		0,                          // lpDirectory
+		uintptr(1),                 // nShowCmd: SW_SHOWNORMAL
+	)
+	
+	// ShellExecuteW 返回值 > 32 表示成功
+	if ret > 32 {
+		logger.Info("浏览器已打开（使用ShellExecuteW），访问地址：%s", url)
+		return nil
+	}
+	
+	// 如果ShellExecuteW失败，尝试降级方案
+	logger.Warn("ShellExecuteW打开浏览器失败（返回值：%d，错误：%v），尝试降级方案", ret, err)
+	
+	// 方案2：降级使用 rundll32（某些环境下可能有效）
+	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: CREATE_NO_WINDOW,
 	}
 	
-	if err := cmd.Start(); err != nil {
-		// 方案2：降级使用 rundll32
-		logger.Warn("cmd start 打开浏览器失败，尝试 rundll32 方案：%v", err)
-		cmd2 := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-		cmd2.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,
-			CreationFlags: CREATE_NO_WINDOW,
-		}
-		
-		if err2 := cmd2.Start(); err2 != nil {
-			// 方案3：最后尝试直接使用 ShellExecute（通过 explorer）
-			logger.Warn("rundll32 也失败，尝试 explorer 方案：%v", err2)
-			cmd3 := exec.Command("explorer", url)
-			cmd3.SysProcAttr = &syscall.SysProcAttr{
-				HideWindow:    true,
-				CreationFlags: CREATE_NO_WINDOW,
-			}
-			
-			if err3 := cmd3.Start(); err3 != nil {
-				logger.Error("所有打开浏览器方案均失败：cmd=%v, rundll32=%v, explorer=%v", err, err2, err3)
-				return fmt.Errorf("打开浏览器失败（所有方案均失败）：%v", err3)
-			}
-			cmd3.Process.Release()
-			logger.Info("浏览器已打开（使用explorer方案），访问地址：%s", url)
-			return nil
-		}
-		cmd2.Process.Release()
-		logger.Info("浏览器已打开（使用rundll32方案），访问地址：%s", url)
-		return nil
+	if err2 := cmd.Start(); err2 != nil {
+		logger.Error("所有打开浏览器方案均失败：ShellExecuteW返回%d, rundll32错误=%v", ret, err2)
+		return fmt.Errorf("打开浏览器失败（ShellExecuteW返回%d）", ret)
 	}
 	
-	// 释放进程句柄，避免资源泄漏
 	cmd.Process.Release()
-	logger.Info("浏览器已打开（使用cmd start方案），访问地址：%s", url)
+	logger.Info("浏览器已打开（使用rundll32降级方案），访问地址：%s", url)
 	return nil
 }
 
