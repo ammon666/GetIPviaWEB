@@ -46,11 +46,19 @@ type NetworkInfo struct {
 }
 
 func main() {
-	// ========== 后台运行参数 ==========
+	// ========== 新增：编译模式参数（解决CI卡住问题） ==========
+	buildOnly := flag.Bool("build", false, "仅编译模式（CI环境使用，不运行业务逻辑）")
+	// 后台运行参数
 	daemonMode := flag.Bool("daemon", false, "是否后台运行（不依赖控制台）")
 	// 原有间隔参数
 	intervalMin := flag.Float64("interval", 1.0, "定时上报间隔（分钟），例如 0.5 表示30秒，2 表示2分钟")
 	flag.Parse()
+
+	// ========== 关键修复：CI环境仅编译，不运行程序 ==========
+	if *buildOnly {
+		fmt.Println("【编译模式】仅执行编译，不运行业务逻辑")
+		return // 直接退出，避免阻塞
+	}
 
 	// ========== 后台运行逻辑 ==========
 	if *daemonMode {
@@ -80,7 +88,7 @@ func main() {
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
-	// 处理程序退出信号（Ctrl+C）- 修复Windows兼容的信号监听
+	// 处理程序退出信号（Ctrl+C）- Windows兼容的信号监听
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	fmt.Printf("【启动】定时上报已开启，间隔：%.1f分钟（进程ID：%d，按 Ctrl+C 退出）\n", reportInterval.Minutes(), os.Getpid())
@@ -95,14 +103,14 @@ func main() {
 		}
 	}()
 
-	// 阻塞等待退出信号（替代原有的Scanln，避免控制台阻塞）
+	// 阻塞等待退出信号（仅生产环境运行，CI环境不会走到这里）
 	<-sigChan
 	fmt.Println("\n【退出】程序正在停止...")
 	ticker.Stop()
 	fmt.Println("【退出】定时上报已停止，程序结束")
 }
 
-// ========== 修复：Windows兼容的后台运行启动函数 ==========
+// ========== Windows兼容的后台运行启动函数 ==========
 func startDaemon() error {
 	// 获取当前程序路径和参数
 	args := os.Args[1:]
