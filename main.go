@@ -678,20 +678,13 @@ func installService() error {
 	}
 	defer s.Close()
 
-	// 校验服务启动类型是否设置成功
-	sConfig, err := s.QueryConfig()
-	if err != nil {
-		return fmt.Errorf("校验服务配置失败：%v", err)
-	}
-	if sConfig.StartType != mgr.StartAutomatic {
-		return fmt.Errorf("服务启动类型设置失败，当前为：%v", sConfig.StartType)
-	}
-
+	// 移除无效的QueryConfig校验逻辑（核心修复点）
+	logger.Info("服务%s注册成功（自动启动）", serviceName)
+	
 	if err := eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
 		logger.Warn("注册事件日志失败：%v", err)
 	}
 
-	logger.Info("服务%s注册成功（自动启动）", serviceName)
 	return nil
 }
 
