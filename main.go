@@ -134,19 +134,27 @@ func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 	changes <- svc.Status{State: svc.StartPending}
 	writeLog("服务启动中...")
 
-	// 首次运行启动浏览器
+	// 首次运行启动浏览器（仅第一次打开时触发）
 	if isFirstRun {
 		go func() {
 			time.Sleep(2 * time.Second) // 延迟启动，避免服务未就绪
 			openBrowser(fmt.Sprintf(ViewURLTemplate, machineFixedUUID))
-			// 标记首次运行完成
+			// 标记首次运行完成（创建标记文件，后续不再弹浏览器）
 			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0644); err != nil {
 				writeLog(fmt.Sprintf("写入首次运行标记文件失败：%v", err))
 			}
 		}()
 	}
 
-	// 启动定时上报协程
+	// ========== 核心修改：服务启动时立即上报一次IP（每次打开都执行） ==========
+	if err := reportIP(); err != nil {
+		writeLog(fmt.Sprintf("服务启动立即上报IP失败：%v", err))
+		logger.Warning(1, fmt.Sprintf("服务启动立即上报IP失败：%v", err))
+	} else {
+		writeLog("服务启动立即上报IP成功")
+	}
+
+	// 启动定时上报协程（按间隔重复上报）
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
