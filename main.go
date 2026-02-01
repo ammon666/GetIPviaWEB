@@ -4,23 +4,24 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/user"
-	"runtime"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 )
 
 // 配置项：修正后的正确上报地址（删除了错误的POST%20）
 const (
 	WorkersURL = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
-	ViewBaseURL = "https://getip.ammon.de5.net/view/"      // 查看地址基础URL
 	Timeout    = 5 * time.Second                         // 上报超时时间
 	APIKey     = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
+	DefaultInterval = 1 * time.Minute                    // 默认上报间隔：1分钟
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
@@ -44,9 +45,49 @@ type NetworkInfo struct {
 }
 
 func main() {
+	// ========== 新增：解析命令行参数（上报间隔） ==========
+	intervalMin := flag.Float64("interval", 1.0, "定时上报间隔（分钟），例如 0.5 表示30秒，2 表示2分钟")
+	flag.Parse()
+
+	// 验证并转换间隔参数（防止负数）
+	reportInterval := DefaultInterval
+	if *intervalMin > 0 {
+		reportInterval = time.Duration(*intervalMin * 60) * time.Second
+	} else {
+		fmt.Printf("【警告】间隔参数无效（%.2f分钟），使用默认值：1分钟\n", *intervalMin)
+	}
+
 	// 1. 初始化机器固定UUID（唯一查询标识，优先初始化）
 	initMachineFixedUUID()
 
+	// ========== 新增：初始化定时器 ==========
+	ticker := time.NewTicker(reportInterval)
+	defer ticker.Stop()
+
+	// 处理程序退出信号（Ctrl+C）
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	fmt.Printf("【启动】定时上报已开启，间隔：%.1f分钟（按 Ctrl+C 退出）\n", reportInterval.Minutes())
+
+	// 首次立即执行一次上报
+	performReport()
+
+	// ========== 新增：定时循环上报 ==========
+	go func() {
+		for range ticker.C {
+			performReport()
+		}
+	}()
+
+	// 阻塞等待退出信号（替代原有的Scanln，避免控制台阻塞）
+	<-sigChan
+	fmt.Println("\n【退出】程序正在停止...")
+	ticker.Stop()
+	fmt.Println("【退出】定时上报已停止，程序结束")
+}
+
+// ========== 新增：抽离上报逻辑为独立函数 ==========
+func performReport() {
 	// 2. 获取当前登录用户名（仅保留纯用户名，去掉计算机名）
 	username, err := getCurrentUsername()
 	if err != nil {
@@ -104,23 +145,7 @@ func main() {
 		fmt.Printf("\n【上报失败】%v\n", err)
 	} else {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
-		
-		// 拼接查看地址并自动打开
-		viewURL := ViewBaseURL + machineFixedUUID
-		fmt.Println("【查看地址】", viewURL)
-		
-		// 尝试自动打开浏览器
-		if err := openBrowser(viewURL); err != nil {
-			fmt.Printf("【提示】自动打开浏览器失败：%v，请手动访问：%s\n", err, viewURL)
-		} else {
-			fmt.Println("【提示】已自动打开浏览器访问查看地址")
-		}
 	}
-
-	// 7. 暂停程序（控制台窗口不立即关闭）
-	fmt.Println("\n按任意键退出...")
-	var input string
-	fmt.Scanln(&input)
 }
 
 // getCurrentUsername 获取纯用户名（去掉Windows的计算机名前缀）
@@ -370,27 +395,4 @@ func reportToWorkers(data ReportData) error {
 	}
 
 	return nil
-}
-
-// openBrowser 跨平台打开浏览器访问指定URL
-func openBrowser(url string) error {
-	var cmd string
-	var args []string
-
-	switch runtime.GOOS {
-	case "windows":
-		cmd = "cmd"
-		args = []string{"/c", "start", url}
-	case "darwin": // macOS
-		cmd = "open"
-		args = []string{url}
-	case "linux": // Linux
-		cmd = "xdg-open"
-		args = []string{url}
-	default:
-		return fmt.Errorf("不支持的操作系统：%s", runtime.GOOS)
-	}
-
-	// 执行命令打开浏览器
-	return exec.Command(cmd, args...).Start()
 }
