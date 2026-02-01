@@ -13,36 +13,53 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
+// 手动声明Windows API常量（解决未定义问题）
+const (
+	SW_HIDE            = 0
+	SWP_HIDEWINDOW     = 0x0080
+	SWP_NOMOVE         = 0x0002
+	SWP_NOSIZE         = 0x0001
+	CREATE_NO_WINDOW   = 0x08000000
+)
+
+// 手动声明Windows API函数（解决未定义问题）
+var (
+	kernel32                = syscall.NewLazyDLL("kernel32.dll")
+	user32                  = syscall.NewLazyDLL("user32.dll")
+	procGetConsoleWindow    = kernel32.NewProc("GetConsoleWindow")
+	procShowWindow          = user32.NewProc("ShowWindow")
+	procSetWindowPos        = user32.NewProc("SetWindowPos")
+)
+
 // 全局配置
 var (
 	// 路径配置（使用ProgramData，确保Local System账户可读写）
-	logDir         = filepath.Join(os.Getenv("ProgramData"), "IPReportService")
-	logPath        = filepath.Join(logDir, "service.log")
-	firstRunFlag   = filepath.Join(logDir, "first_run.flag") // 首次运行标记
+	logDir                 = filepath.Join(os.Getenv("ProgramData"), "IPReportService")
+	logPath                = filepath.Join(logDir, "service.log")
+	firstRunFlag           = filepath.Join(logDir, "first_run.flag") // 首次运行标记
 
 	// 服务核心配置
-	serviceName    = "IPReportService"       // 服务内部名称（唯一）
-	displayName    = "IP自动上报服务"          // 服务显示名称
-	serviceDesc    = "后台运行，每次启动上报IP，仅首次打开弹浏览器"
+	serviceName            = "IPReportService"       // 服务内部名称（唯一）
+	displayName            = "IP自动上报服务"          // 服务显示名称
+	serviceDesc            = "后台运行，每次启动上报IP，仅首次打开弹浏览器"
 
 	// 业务配置（还原第一版的URL）
-	APIKey         = "" // 编译时通过-ldflags注入：-X main.APIKey=你的密钥
-	WorkersURL     = "https://getip.ammon.de5.net/api/report"  // 第一版上报地址
-	ViewURLTemplate = "https://getip.ammon.de5.net/view/%s"    // 第一版浏览器打开地址
-	Timeout        = 10 * time.Second
-	DefaultInterval = 1 * time.Minute
+	APIKey                 = "" // 编译时通过-ldflags注入：-X main.APIKey=你的密钥
+	WorkersURL             = "https://getip.ammon.de5.net/api/report"  // 第一版上报地址
+	ViewURLTemplate        = "https://getip.ammon.de5.net/view/%s"    // 第一版浏览器打开地址
+	Timeout                = 10 * time.Second
+	DefaultInterval        = 1 * time.Minute
 
 	// 全局变量
-	logger         *eventlog.Log
-	machineFixedUUID string
-	isFirstRun     bool
-	reportInterval time.Duration
+	logger                 *eventlog.Log
+	machineFixedUUID       string
+	isFirstRun             bool
+	reportInterval         time.Duration
 )
 
 // init：初始化基础配置（优先执行）
@@ -54,7 +71,7 @@ func init() {
 
 	// 2. 校验APIKey（强制编译时注入）
 	if APIKey == "" {
-		errMsg := "APIKey未配置！请使用编译命令：go build -ldflags \"-X main.APIKey=你的密钥\" -ldflags -H=windowsgui"
+		errMsg := "APIKey未配置！请使用编译命令：go build -ldflags \"-X main.APIKey=你的密钥\" -H=windowsgui"
 		writeLog(errMsg)
 		panic(errMsg)
 	}
@@ -79,6 +96,23 @@ func init() {
 func getMachineUUID() string {
 	// 实际场景可替换为读取硬件信息（如主板序列号）
 	return fmt.Sprintf("machine-%s", time.Now().UnixNano())
+}
+
+// hideConsoleWindow 强制隐藏控制台窗口（修复API调用问题）
+func hideConsoleWindow() {
+	// 调用Windows API获取控制台窗口句柄
+	hwnd, _, _ := procGetConsoleWindow.Call()
+	if hwnd != 0 {
+		// 隐藏窗口：ShowWindow(hwnd, SW_HIDE)
+		procShowWindow.Call(hwnd, uintptr(SW_HIDE))
+		// 从任务栏移除窗口
+		procSetWindowPos.Call(
+			hwnd,
+			0,
+			0, 0, 0, 0,
+			uintptr(SWP_HIDEWINDOW|SWP_NOMOVE|SWP_NOSIZE),
+		)
+	}
 }
 
 // 主函数：服务入口（处理安装/卸载/运行）
@@ -151,17 +185,6 @@ func main() {
 	}
 }
 
-// hideConsoleWindow 强制隐藏控制台窗口（运行时保障）
-func hideConsoleWindow() {
-	hwnd := windows.GetConsoleWindow()
-	if hwnd != 0 {
-		// 隐藏窗口
-		windows.ShowWindow(hwnd, windows.SW_HIDE)
-		// 从任务栏移除
-		windows.SetWindowPos(hwnd, 0, 0, 0, 0, 0, windows.SWP_HIDEWINDOW|windows.SWP_NOMOVE|windows.SWP_NOSIZE)
-	}
-}
-
 // runBackground 非服务模式下的纯后台运行逻辑（无控制台、关闭控制台不终止）
 func runBackground() {
 	// 立即上报IP
@@ -193,16 +216,7 @@ func runBackground() {
 	logInfo("后台运行模式：开始定时上报（永久运行）")
 
 	// 阻塞主线程（防止程序退出）
-	for {
-		select {
-		case <-ticker.C:
-			if err := reportIP(); err != nil {
-				logError(fmt.Sprintf("定时上报失败：%v", err))
-			} else {
-				logInfo("定时上报成功")
-			}
-		}
-	}
+	select {}
 }
 
 // ipReportService：实现Windows服务接口
@@ -350,7 +364,7 @@ func openBrowser(url string) error {
 	cmd := exec.Command("cmd", "/c", "start", "", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: windows.CREATE_NO_WINDOW, // 正确的常量使用
+		CreationFlags: CREATE_NO_WINDOW, // 修复常量定义问题
 	}
 	return cmd.Start()
 }
