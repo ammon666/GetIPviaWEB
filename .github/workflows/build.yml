@@ -17,10 +17,20 @@ jobs:
           go-version: '1.22' # 适配你的Go版本，建议1.19+
           cache: true # 启用Go模块缓存，加速编译
 
-      - name: 安装依赖
+      - name: 初始化/清理Go模块（修复校验和问题）
         run: |
-          go mod init GetIPviaWEB # 初始化mod（如果没有go.mod）
-          go get golang.org/x/sys/windows/svc
+          # 仅当go.mod不存在时才初始化
+          if (-not (Test-Path "go.mod")) {
+              go mod init GetIPviaWEB
+          }
+          # 清理旧的go.sum和缓存，解决校验和不匹配问题
+          go clean -modcache
+          if (Test-Path "go.sum") {
+              Remove-Item "go.sum" -Force
+          }
+          # 下载正确的依赖（仅golang.org/x/sys，移除错误的kardianos依赖）
+          go get golang.org/x/sys/windows/svc@latest
+          go mod tidy # 整理依赖，生成正确的go.sum
 
       - name: 编译可执行文件（注入APIKey）
         run: |
