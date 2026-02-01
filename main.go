@@ -1,19 +1,37 @@
 package main
 
 import (
+	"bytes"
 	"crypto/md5"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os/user"
 	"strings"
 	"time"
 )
 
-// 全局变量：存储机器固定UUID（基于物理网卡MAC）
+// 配置项：固化上报地址（按你的要求填写）
+const (
+	WorkersURL = "https://getip.ammon.de5.net/POST%20/api/report" // 你指定的上报地址
+	Timeout    = 5 * time.Second                                // 上报超时时间
+)
+
+// 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
 var machineFixedUUID string
 
+// ReportData 上报到 Workers 的数据结构（UUID 作为核心标识）
+type ReportData struct {
+	MachineUUID string `json:"machine_uuid"` // 唯一查询标志（优先字段）
+	Username    string `json:"username"`     // 登录用户名
+	LocalIP     string `json:"local_ip"`     // 物理网卡IPv4
+	DetectTime  string `json:"detect_time"`  // 检测时间
+	ReportTime  string `json:"report_time"`  // 上报时间
+}
+
 func main() {
-	// 1. 初始化机器固定UUID
+	// 1. 初始化机器固定UUID（唯一查询标识，优先初始化）
 	initMachineFixedUUID()
 
 	// 2. 获取当前登录用户名（仅保留纯用户名，去掉计算机名）
@@ -22,25 +40,39 @@ func main() {
 		username = fmt.Sprintf("获取失败：%v", err)
 	}
 
-	// 3. 输出核心信息
-	fmt.Println("==================== IP监控工具 ====================")
-	fmt.Printf("当前登录用户名：%s\n", username)
-	fmt.Printf("机器唯一标识（UUID）：%s\n", machineFixedUUID)
-	fmt.Printf("检测时间：%s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Println("----------------------------------------------------")
-
-	// 4. 获取正在使用的物理网卡私有IPv4地址
+	// 3. 获取正在使用的物理网卡私有IPv4地址（优化后逻辑）
 	localIP, err := getActivePhysicalNicIPv4()
 	if err != nil {
-		fmt.Printf("获取物理网卡IP失败：%v\n", err)
+		fmt.Printf("【错误】获取物理网卡IP失败：%v\n", err)
 	} else if localIP == "" {
-		fmt.Println("未检测到正在使用的物理网卡IPv4地址")
+		fmt.Println("【提示】未检测到正在使用的物理网卡IPv4地址")
 	} else {
-		fmt.Printf("正在使用的物理网卡IPv4地址：%s\n", localIP)
+		fmt.Printf("【成功】正在使用的物理网卡IPv4地址：%s\n", localIP)
 	}
+
+	// 4. 输出核心信息（UUID 放到最前面，作为唯一标识）
+	fmt.Println("\n==================== IP监控工具 ====================")
+	fmt.Printf("机器唯一查询标识（UUID）：%s\n", machineFixedUUID) // 优先展示UUID
+	fmt.Printf("当前登录用户名：%s\n", username)
+	fmt.Printf("检测时间：%s\n", time.Now().Format("2006-01-02 15:04:05"))
+	fmt.Printf("物理网卡IPv4：%s\n", localIP)
 	fmt.Println("====================================================")
 
-	// 5. 暂停程序（控制台窗口不立即关闭）
+	// 5. 上报信息到指定地址（UUID 作为核心字段）
+	reportData := ReportData{
+		MachineUUID: machineFixedUUID, // 唯一查询标志（优先字段）
+		Username:    username,
+		LocalIP:     localIP,
+		DetectTime:  time.Now().Format("2006-01-02 15:04:05"),
+		ReportTime:  time.Now().Format("2006-01-02 15:04:05"),
+	}
+	if err := reportToWorkers(reportData); err != nil {
+		fmt.Printf("\n【上报失败】%v\n", err)
+	} else {
+		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
+	}
+
+	// 6. 暂停程序（控制台窗口不立即关闭）
 	fmt.Println("\n按任意键退出...")
 	var input string
 	fmt.Scanln(&input)
@@ -63,17 +95,18 @@ func getCurrentUsername() (string, error) {
 	return currentUser.Username, nil
 }
 
-// initMachineFixedUUID 初始化机器固定UUID（基于物理网卡MAC）
+// initMachineFixedUUID 初始化机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
 func initMachineFixedUUID() {
 	// 获取物理网卡MAC地址
 	macAddr := getPhysicalNicMAC()
 	if macAddr == "" {
-		// 兜底：若获取不到MAC，使用固定默认值（避免空值）
+		// 兜底：若获取不到MAC，使用固定默认值（避免空值，仍保证唯一性）
 		machineFixedUUID = "00000000-0000-0000-0000-000000000000"
+		fmt.Println("【警告】未获取到物理网卡MAC，使用默认UUID（唯一标识）：", machineFixedUUID)
 		return
 	}
 
-	// 基于MAC地址生成固定UUID（MD5哈希后转换为UUID格式）
+	// 基于MAC地址生成固定UUID（MD5哈希后转换为UUID格式，保证唯一性）
 	hash := md5.Sum([]byte(macAddr))
 	uuidStr := fmt.Sprintf("%x-%x-%x-%x-%x",
 		hash[0:4],
@@ -83,125 +116,192 @@ func initMachineFixedUUID() {
 		hash[10:16],
 	)
 	machineFixedUUID = uuidStr
+	fmt.Println("【初始化】机器唯一UUID（查询标识）：", machineFixedUUID)
 }
 
 // getPhysicalNicMAC 获取物理网卡的MAC地址（排除虚拟网卡）
 func getPhysicalNicMAC() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
+		fmt.Printf("【错误】获取网卡列表失败：%v\n", err)
 		return ""
 	}
 
+	// 遍历所有网卡，筛选物理网卡
 	for _, iface := range ifaces {
-		// 筛选条件：物理网卡（UP状态、非回环、非虚拟、有MAC）
-		if iface.Flags&net.FlagUp == 0 ||          // 网卡未启用
-			iface.Flags&net.FlagLoopback != 0 || // 回环网卡
-			iface.HardwareAddr.String() == "" {  // 无MAC地址（虚拟网卡）
+		// 基础筛选：UP状态、非回环、有MAC地址
+		if iface.Flags&net.FlagUp == 0 ||
+			iface.Flags&net.FlagLoopback != 0 ||
+			iface.HardwareAddr.String() == "" {
 			continue
 		}
 
-		// 排除虚拟网卡（关键词匹配）
 		nicName := strings.ToLower(iface.Name)
+		// 排除所有虚拟网卡
 		if strings.Contains(nicName, "docker") ||
 			strings.Contains(nicName, "vmware") ||
 			strings.Contains(nicName, "virtual") ||
 			strings.Contains(nicName, "vpn") ||
 			strings.Contains(nicName, "hyper-v") ||
 			strings.Contains(nicName, "tun") ||
-			strings.Contains(nicName, "tap") {
+			strings.Contains(nicName, "tap") ||
+			strings.Contains(nicName, "pppoe") ||
+			strings.Contains(nicName, "bridge") ||
+			strings.Contains(nicName, "nat") ||
+			strings.Contains(nicName, "loopback") ||
+			strings.Contains(nicName, "isatap") ||
+			strings.Contains(nicName, "teredo") {
 			continue
 		}
 
 		// 优先返回有线/无线物理网卡MAC
-		if strings.Contains(nicName, "ethernet") || strings.Contains(nicName, "wlan") || strings.Contains(nicName, "wi-fi") {
+		if strings.Contains(nicName, "ethernet") ||
+			strings.Contains(nicName, "wlan") ||
+			strings.Contains(nicName, "wi-fi") ||
+			strings.Contains(nicName, "lan") {
+			fmt.Printf("【调试】找到物理网卡：%s，MAC：%s\n", iface.Name, iface.HardwareAddr.String())
 			return iface.HardwareAddr.String()
 		}
 	}
 
-	// 若未匹配到有线/无线，返回第一个符合条件的物理网卡MAC
+	// 兜底：返回第一个符合基础条件的物理网卡MAC
 	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 && iface.HardwareAddr.String() != "" {
+		if iface.Flags&net.FlagUp != 0 &&
+			iface.Flags&net.FlagLoopback == 0 &&
+			iface.HardwareAddr.String() != "" {
+			fmt.Printf("【调试】兜底物理网卡：%s，MAC：%s\n", iface.Name, iface.HardwareAddr.String())
 			return iface.HardwareAddr.String()
 		}
 	}
 
+	fmt.Println("【警告】未找到任何物理网卡MAC")
 	return ""
 }
 
-// getActivePhysicalNicIPv4 获取正在使用的物理网卡私有IPv4地址
-// 仅保留：有线(Ethernet)/无线(WLAN)物理网卡、UP状态、私有IPv4、非回环
+// getActivePhysicalNicIPv4 优化版：获取正在使用的物理网卡私有IPv4地址
 func getActivePhysicalNicIPv4() (string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return "", fmt.Errorf("获取网卡列表失败：%w", err)
 	}
 
-	// 优先存储有线网卡IP，其次无线
-	var ethernetIP, wlanIP string
+	// 存储所有符合条件的物理网卡IP
+	var physicalIPs []string
 
 	for _, iface := range ifaces {
-		// 基础筛选：UP状态、非回环、物理网卡（排除虚拟）
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		// 基础筛选：UP状态、非回环、有MAC
+		if iface.Flags&net.FlagUp == 0 ||
+			iface.Flags&net.FlagLoopback != 0 ||
+			iface.HardwareAddr.String() == "" {
 			continue
 		}
 
-		// 排除虚拟网卡
 		nicName := strings.ToLower(iface.Name)
+		// 排除虚拟网卡
 		if strings.Contains(nicName, "docker") ||
 			strings.Contains(nicName, "vmware") ||
 			strings.Contains(nicName, "virtual") ||
 			strings.Contains(nicName, "vpn") ||
-			strings.Contains(nicName, "hyper-v") {
+			strings.Contains(nicName, "hyper-v") ||
+			strings.Contains(nicName, "tun") ||
+			strings.Contains(nicName, "tap") ||
+			strings.Contains(nicName, "pppoe") ||
+			strings.Contains(nicName, "bridge") ||
+			strings.Contains(nicName, "nat") {
 			continue
 		}
 
-		// 获取网卡地址
+		// 获取当前网卡的所有地址
 		addrs, err := iface.Addrs()
 		if err != nil {
+			fmt.Printf("【调试】网卡%s获取地址失败：%v\n", iface.Name, err)
 			continue
 		}
 
-		// 筛选私有IPv4
+		// 遍历地址，筛选私有IPv4
 		for _, addr := range addrs {
 			ipNet, ok := addr.(*net.IPNet)
-			if !ok || ipNet.IP.IsLoopback() || ipNet.IP.To4() == nil {
+			if !ok {
 				continue
 			}
 
-			// 确认是私有IPv4
-			if isPrivateIPv4(ipNet.IP) {
-				// 区分有线/无线网卡，优先选有线
-				if strings.Contains(nicName, "ethernet") {
-					ethernetIP = ipNet.IP.String()
-				} else if strings.Contains(nicName, "wlan") || strings.Contains(nicName, "wi-fi") {
-					wlanIP = ipNet.IP.String()
-				}
+			// 仅保留IPv4、非回环、私有地址
+			ip := ipNet.IP.To4()
+			if ip == nil || ip.IsLoopback() || !isPrivateIPv4(ip) {
+				continue
 			}
+
+			ipStr := ip.String()
+			fmt.Printf("【调试】物理网卡%s的有效IPv4：%s\n", iface.Name, ipStr)
+			physicalIPs = append(physicalIPs, ipStr)
 		}
 	}
 
-	// 优先返回有线网卡IP，无则返回无线
-	if ethernetIP != "" {
-		return ethernetIP, nil
-	}
-	if wlanIP != "" {
-		return wlanIP, nil
+	// 优先返回第一个有效IP（有线网卡优先）
+	if len(physicalIPs) > 0 {
+		return physicalIPs[0], nil
 	}
 
-	// 无符合条件的IP
 	return "", nil
 }
 
 // isPrivateIPv4 判断是否为私有内网IPv4
 func isPrivateIPv4(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	// 10.0.0.0/8
 	if ip[0] == 10 {
 		return true
 	}
+	// 172.16.0.0/12
 	if ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31 {
 		return true
 	}
+	// 192.168.0.0/16
 	if ip[0] == 192 && ip[1] == 168 {
 		return true
 	}
+	// 169.254.0.0/16（本地链路地址，可选保留）
+	if ip[0] == 169 && ip[1] == 254 {
+		return true
+	}
 	return false
+}
+
+// reportToWorkers 上报核心信息到指定地址（UUID 作为唯一查询标识）
+func reportToWorkers(data ReportData) error {
+	// 1. 转换为JSON格式（UUID 作为第一个字段）
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("JSON序列化失败：%w", err)
+	}
+
+	// 2. 创建HTTP客户端（设置超时）
+	client := &http.Client{
+		Timeout: Timeout,
+	}
+
+	// 3. 发送POST请求到指定地址
+	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("创建请求失败：%w", err)
+	}
+
+	// 设置请求头（确保服务端能正确解析）
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+
+	// 4. 执行请求
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("发送请求失败：%w", err)
+	}
+	defer resp.Body.Close()
+
+	// 5. 检查响应状态
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("上报地址响应失败，状态码：%d", resp.StatusCode)
+	}
+
+	return nil
 }
