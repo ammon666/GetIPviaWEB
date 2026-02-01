@@ -7,7 +7,6 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    # 开启shell执行跟踪，打印所有命令执行日志（便于定位报错）
     defaults:
       run:
         shell: pwsh
@@ -59,7 +58,6 @@ jobs:
               Write-Error "❌ Go程序编译失败，退出码：$LASTEXITCODE"
               exit 1
           }
-          # 验证编译产物
           if (Test-Path "GetIPviaWEB.exe") {
               $fileSize = (Get-Item GetIPviaWEB.exe).Length
               Write-Host "✅ 编译成功，文件大小：$fileSize 字节"
@@ -73,7 +71,6 @@ jobs:
       - name: 安装/验证 Inno Setup
         run: |
           Write-Host "🔧 检查Inno Setup安装状态"
-          # 检查ISCC是否存在
           $isccExists = $false
           try {
               Get-Command "ISCC.exe" -ErrorAction Stop | Out-Null
@@ -93,7 +90,6 @@ jobs:
               Write-Host "✅ Inno Setup已预装，跳过安装步骤"
           }
 
-          # 验证ISCC可用性
           try {
               & ISCC.exe /? 2>&1 | Out-Null
               Write-Host "✅ Inno Setup验证成功（可正常调用ISCC编译器）"
@@ -104,42 +100,44 @@ jobs:
         id: check-inno
         continue-on-error: false
 
-      - name: 生成 Inno Setup 安装包脚本
+      # ========== 核心修复：拆分ISS脚本生成逻辑，避免YAML多行字符串冲突 ==========
+      - name: 生成 Inno Setup 安装包脚本（无YAML语法冲突）
         run: |
           Write-Host "🔧 生成Inno Setup配置脚本（GetIPviaWEB.iss）"
-          # ========== 修复第112行YAML语法错误：改用Here-String规范格式 ==========
-          $issContent = @"
-[Setup]
-AppName=GetIPviaWEB Service
-AppVersion=1.0.0
-DefaultDirName={autopf}\GetIPviaWEB
-DefaultGroupName=GetIPviaWEB
-OutputDir=./installer
-OutputBaseFilename=GetIPviaWEB-Setup
-Compression=lzma
-SolidCompression=yes
-PrivilegesRequired=lowest
-
-[Files]
-Source: "GetIPviaWEB.exe"; DestDir: "{app}"; Flags: ignoreversion
-
-[Icons]
-Name: "{group}\GetIPviaWEB Service"; Filename: "{app}\GetIPviaWEB.exe"
-Name: "{commondesktop}\GetIPviaWEB Service"; Filename: "{app}\GetIPviaWEB.exe"; Flags: createonlyiffileexists
-
-[Run]
-Filename: "{app}\GetIPviaWEB.exe"; Description: "启动 GetIPviaWEB 服务"; Flags: postinstall skipifsilent
-
-[UninstallRun]
-Filename: "{app}\GetIPviaWEB.exe"; Parameters: "/uninstall"; Flags: skipifdoesntexist
-
-[UninstallDelete]
-Type: filesandordirs; Name: "{app}"
-"@
-          # 写入文件（使用CRLF换行符，兼容Inno Setup）
-          $issContent | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -NewLine CRLF
           
-          # 验证ISS文件是否生成
+          # 分步写入ISS内容，避免多行字符串触发YAML错误
+          " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " AppName=GetIPviaWEB Service" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " DefaultDirName={autopf}\GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " DefaultGroupName=GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " OutputDir=./installer" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " OutputBaseFilename=GetIPviaWEB-Setup" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Compression=lzma" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " PrivilegesRequired=lowest" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " [Icons]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Name: ""{group}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Name: ""{commondesktop}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""; Flags: createonlyiffileexists" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Description: ""启动 GetIPviaWEB 服务""; Flags: postinstall skipifsilent" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""/uninstall""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # 转换换行符为CRLF（兼容Inno Setup）
+          $content = Get-Content GetIPviaWEB.iss -Raw
+          $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8
+          
+          # 验证ISS文件
           if (Test-Path "GetIPviaWEB.iss") {
               $fileSize = (Get-Item GetIPviaWEB.iss).Length
               Write-Host "✅ ISS脚本生成成功，文件大小：$fileSize 字节"
@@ -153,19 +151,15 @@ Type: filesandordirs; Name: "{app}"
       - name: 编译图形化安装包
         run: |
           Write-Host "🔧 开始编译图形化安装包"
-          # 创建输出目录（确保存在）
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
           
-          # 获取ISS脚本绝对路径
           $issPath = (Resolve-Path GetIPviaWEB.iss).Path
           Write-Host "🔧 ISS脚本绝对路径：$issPath"
           
-          # 执行ISCC编译（打印详细日志）
           Write-Host "🔧 执行命令：ISCC.exe /O`"./installer`" /F`"GetIPviaWEB-Setup`" `"$issPath`""
           & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup" "$issPath"
           $compileExitCode = $LASTEXITCODE
           
-          # 检查编译结果
           if ($compileExitCode -eq 0) {
               $setupFile = "./installer/GetIPviaWEB-Setup.exe"
               if (Test-Path $setupFile) {
