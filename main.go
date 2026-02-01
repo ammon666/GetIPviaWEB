@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings" // 新增：导入strings包
 	"syscall"
 	"time"
 
@@ -143,7 +144,8 @@ type ipReportService struct{}
 // Execute：服务核心逻辑（Windows服务入口）
 func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	// 1. 服务启动中状态
-	const acceptedCmds = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptInterrogate
+	// 修复：移除错误的svc.AcceptInterrogate，Interrogate是默认支持的，无需显式声明
+	const acceptedCmds = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPauseAndContinue
 	changes <- svc.Status{State: svc.StartPending, WaitHint: 2000}
 
 	// 2. 核心逻辑：立即上报IP（每次启动都执行）
@@ -192,7 +194,7 @@ loop:
 			// 处理服务控制指令（停止/暂停/查询等）
 			switch req.Cmd {
 			case svc.Interrogate:
-				changes <- req.CurrentStatus // 响应状态查询
+				changes <- req.CurrentStatus // 响应状态查询（无需额外配置）
 			case svc.Stop, svc.Shutdown:
 				logInfo("收到停止指令，服务即将退出")
 				changes <- svc.Status{State: svc.StopPending, WaitHint: 1000}
@@ -452,9 +454,4 @@ func runConsole() {
 			logInfo("定时上报成功")
 		}
 	}
-}
-
-// 补充：字符串工具函数（避免引入额外包）
-func stringsContains(s, substr string) bool {
-	return len(s) >= len(substr) && s[len(s)-len(substr):] == substr
 }
