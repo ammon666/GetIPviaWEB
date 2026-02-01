@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/json"
-	"flag"   // 关键修复：添加flag包导入，解决undefined: flag报错
+	"flag"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,17 +19,17 @@ import (
 
 // 配置项：仅适配Windows系统
 const (
-	WorkersURL         = "https://getip.ammon.de5.net/api/report" // 上报地址
-	Timeout            = 5 * time.Second                         // 上报超时时间
-	APIKey             = "9ddae7a3-c730-469e-b644-859880ad9752"  // 与Workers代码中的API_KEY一致
-	DefaultInterval    = 1 * time.Minute                         // 默认上报间隔：1分钟
-	ViewURLTemplate    = "https://getip.ammon.de5.net/view/%s"    // UUID查看地址模板
+	WorkersURL      = "https://getip.ammon.de5.net/api/report" // 上报地址
+	Timeout         = 5 * time.Second                         // 上报超时时间
+	APIKey          = "9ddae7a3-c730-469e-b644-859880ad9752"  // 与Workers代码中的API_KEY一致
+	DefaultInterval = 1 * time.Minute                         // 默认上报间隔：1分钟
+	ViewURLTemplate = "https://getip.ammon.de5.net/view/%s"    // UUID查看地址模板
 )
 
 // 全局变量
 var (
-	machineFixedUUID   string        // 机器固定UUID（基于物理网卡MAC）
-	isFirstReportSucc  = true         // 标记是否首次上报成功（控制仅打开一次浏览器）
+	machineFixedUUID  string        // 机器固定UUID（基于物理网卡MAC）
+	isFirstReportSucc = true         // 标记是否首次上报成功（控制仅打开一次浏览器）
 )
 
 // ReportData 上报到 Workers 的数据结构
@@ -52,8 +52,8 @@ type NetworkInfo struct {
 func main() {
 	// 编译模式参数（解决CI卡住问题）
 	buildOnly := flag.Bool("build", false, "仅编译模式（CI环境使用，不运行业务逻辑）")
-	// 后台运行参数
-	daemonMode := flag.Bool("daemon", false, "是否后台运行（不依赖控制台）")
+	// 后台运行参数（核心：脱离控制台，关闭窗口仍运行）
+	daemonMode := flag.Bool("daemon", false, "后台运行模式（关闭控制台仍继续运行）")
 	// 上报间隔参数
 	intervalMin := flag.Float64("interval", 1.0, "定时上报间隔（分钟），例如 0.5 表示30秒，2 表示2分钟")
 	flag.Parse()
@@ -64,14 +64,15 @@ func main() {
 		return
 	}
 
-	// Windows后台运行逻辑
+	// 后台运行模式：彻底脱离控制台，关闭窗口仍运行
 	if *daemonMode {
-		err := startDaemon()
+		err := startBackgroundProcess() // 替换原startDaemon，增强后台逻辑
 		if err != nil {
 			fmt.Printf("【错误】后台启动失败：%v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("【成功】程序已转入后台运行，进程ID：", os.Getpid())
+		fmt.Println("【成功】程序已转入后台运行（关闭控制台仍持续运行），进程ID：", os.Getpid())
+		// 父进程直接退出，子进程完全独立
 		return
 	}
 
@@ -90,53 +91,71 @@ func main() {
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
-	// 处理Windows退出信号（Ctrl+C）
+	// 处理Windows退出信号（仅控制台模式有效）
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	fmt.Printf("【启动】定时上报已开启，间隔：%.1f分钟（进程ID：%d，按 Ctrl+C 退出）\n", reportInterval.Minutes(), os.Getpid())
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGBREAK)
+	fmt.Printf("【启动】定时上报已开启，间隔：%.1f分钟（进程ID：%d）\n", reportInterval.Minutes(), os.Getpid())
+	fmt.Println("【提示】若需关闭控制台后继续运行，请使用 -daemon 参数启动（如：GetIPviaWEB.exe -daemon）")
+	fmt.Println("【提示】按 Ctrl+C 可正常退出程序\n")
 
 	// 首次立即上报
 	performReport()
 
-	// 定时循环上报
+	// 定时循环上报（独立goroutine）
 	go func() {
 		for range ticker.C {
 			performReport()
 		}
 	}()
 
-	// 阻塞等待退出信号
+	// 阻塞等待退出信号（控制台模式）
 	<-sigChan
 	fmt.Println("\n【退出】程序正在停止...")
 	ticker.Stop()
 	fmt.Println("【退出】定时上报已停止，程序结束")
 }
 
-// startDaemon Windows专属后台运行函数
-func startDaemon() error {
-	// 获取当前程序路径和参数，移除-daemon参数避免递归
-	args := os.Args[1:]
-	newArgs := make([]string, 0, len(args))
-	for _, arg := range args {
+// startBackgroundProcess Windows专属：彻底脱离控制台的后台进程启动函数
+// 关键：关闭控制台窗口后，子进程仍能独立运行
+func startBackgroundProcess() error {
+	// 获取当前程序的完整路径（避免相对路径问题）
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取程序路径失败：%w", err)
+	}
+
+	// 构造子进程参数：移除-daemon避免递归启动，保留其他参数
+	args := []string{}
+	for _, arg := range os.Args[1:] {
 		if arg != "-daemon" {
-			newArgs = append(newArgs, arg)
+			args = append(args, arg)
 		}
 	}
 
-	// Windows专属：创建脱离控制台的子进程
-	cmd := exec.Command(os.Args[0], newArgs...)
+	// Windows后台进程核心配置：彻底脱离控制台
+	cmd := exec.Command(exePath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,                              // 隐藏控制台窗口
-		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP, // 脱离父进程
+		HideWindow:      true,                              // 隐藏控制台窗口
+		CreationFlags:   syscall.CREATE_NEW_PROCESS_GROUP | // 创建新进程组，脱离父进程
+			syscall.CREATE_NO_WINDOW | // 不创建控制台窗口（核心：彻底脱离）
+			syscall.DETACHED_PROCESS,  // 分离进程，不继承父控制台句柄
 	}
 
+	// 重定向输出（可选：如需记录日志，可改为写入文件）
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	cmd.Stdin = nil
+
+	// 启动子进程（父进程退出后，子进程仍独立运行）
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("启动后台进程失败：%w", err)
 	}
+
+	// 不等待子进程退出，父进程直接返回
 	return nil
 }
 
-// performReport 执行单次上报逻辑
+// performReport 执行单次上报逻辑（原功能完全保留）
 func performReport() {
 	// 获取当前登录用户名（Windows专属处理）
 	username, err := getCurrentUsername()
@@ -201,11 +220,14 @@ func performReport() {
 	}
 }
 
-// openBrowser Windows专属打开浏览器函数（已删除其他系统兼容逻辑）
+// openBrowser Windows专属打开浏览器函数（原功能保留）
 func openBrowser(url string) error {
-	// Windows专用命令：start "" 避免URL含空格时解析错误，隐藏控制台窗口
+	// Windows专用命令：start "" 避免URL含空格时解析错误
 	cmd := exec.Command("cmd", "/c", "start", "", url)
-	
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true, // 隐藏cmd窗口，仅打开浏览器
+	}
+
 	// 忽略命令输出，仅关注启动是否成功
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -222,7 +244,7 @@ func openBrowser(url string) error {
 	return nil
 }
 
-// getCurrentUsername 获取Windows纯用户名（去掉计算机名前缀）
+// getCurrentUsername 获取Windows纯用户名（原功能保留）
 func getCurrentUsername() (string, error) {
 	currentUser, err := user.Current()
 	if err != nil {
@@ -238,7 +260,7 @@ func getCurrentUsername() (string, error) {
 	return currentUser.Username, nil
 }
 
-// initMachineFixedUUID 初始化Windows机器固定UUID（基于物理网卡MAC）
+// initMachineFixedUUID 初始化Windows机器固定UUID（原功能保留）
 func initMachineFixedUUID() {
 	macAddr := getPhysicalNicMAC()
 	if macAddr == "" {
@@ -260,7 +282,7 @@ func initMachineFixedUUID() {
 	fmt.Println("【初始化】机器唯一UUID：", machineFixedUUID)
 }
 
-// getPhysicalNicMAC 获取Windows物理网卡MAC（排除虚拟网卡）
+// getPhysicalNicMAC 获取Windows物理网卡MAC（原功能保留）
 func getPhysicalNicMAC() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -318,7 +340,7 @@ func getPhysicalNicMAC() string {
 	return ""
 }
 
-// getActivePhysicalNicInfo 获取Windows正在使用的物理网卡完整信息
+// getActivePhysicalNicInfo 获取Windows正在使用的物理网卡完整信息（原功能保留）
 func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -382,13 +404,13 @@ func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 	return networkInfos, nil
 }
 
-// getGatewayAndSubnet 获取Windows指定网卡的网关和子网掩码
+// getGatewayAndSubnet 获取Windows指定网卡的网关和子网掩码（原功能保留）
 func getGatewayAndSubnet(ifaceName string) (string, string) {
-	// Windows专属：可通过exec调用route print/ipconfig解析，此处简化返回空（如需完整功能可扩展）
+	// Windows专属：可通过exec调用route print/ipconfig解析，此处简化返回空
 	return "", ""
 }
 
-// isPrivateIPv4 判断是否为Windows私有内网IPv4
+// isPrivateIPv4 判断是否为Windows私有内网IPv4（原功能保留）
 func isPrivateIPv4(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -403,7 +425,7 @@ func isPrivateIPv4(ip net.IP) bool {
 	return false
 }
 
-// reportToWorkers 上报信息到Workers（Windows网络请求）
+// reportToWorkers 上报信息到Workers（原功能保留）
 func reportToWorkers(data ReportData) error {
 	// 序列化JSON
 	jsonData, err := json.Marshal(data)
