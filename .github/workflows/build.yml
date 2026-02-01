@@ -114,86 +114,87 @@ jobs:
           Write-Host "✅ 重置退出码，流程继续"
         id: check-inno
 
-      # ========== 生成ISS脚本（YAML语法合规+Type参数修复） ==========
+      # ========== 生成ISS脚本（彻底解决Type参数无效+YAML合规） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 生成ISS脚本（YAML兼容+无隐形字符）"
-          # 先删除旧文件
+          Write-Host "🔧 生成ISS脚本（官方推荐写法+纯ASCII字符）"
+          # 删除旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 核心：用echo逐行写入（YAML最兼容的方式，无字符串冲突）
-          # 所有行均为纯ASCII字符，无隐形字符，分号后是半角空格
-          echo '[Setup]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'AppName=GetIPviaWEB' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'AppVersion=1.0.0' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'DefaultDirName={pf}\GetIPviaWEB' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'DefaultGroupName=GetIPviaWEB' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'OutputDir=./installer' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'OutputBaseFilename=GetIPviaWEB-Setup' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Compression=lzma' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'SolidCompression=yes' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'PrivilegesRequired=admin' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'SetupMutex=GetIPviaWEB-InstallMutex' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'CloseApplications=yes' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'CloseApplicationsFilter=GetIPviaWEB.exe' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '[Files]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Source: "GetIPviaWEB.exe"; DestDir: "{app}"' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '[Icons]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"; Parameters: "/VERYSILENT"' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '[Run]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Flags: runhidden' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '[UninstallRun]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Filename: "cmd.exe"; Parameters: "/c rmdir /s /q ""{app}"""; Flags: skipifdoesntexist runhidden nowait' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '[UninstallDelete]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          # 关键：Type参数严格合规，无任何隐形字符
-          echo 'Type: files; Name: "{app}\*.*"' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'Type: dirs; Name: "{app}"' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '[Code]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'function InitializeSetup(): Boolean;' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'var' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  IsAdmin: Boolean;' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'begin' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  IsAdmin := IsAdminLoggedOn();' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  if not IsAdmin then' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  begin' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '    MsgBox(''请以管理员身份运行安装包！'' + #13#10 + ''右键 → 以管理员身份运行'', mbError, MB_OK);' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '    Result := False;' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  end' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  else' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  begin' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '    Result := True;' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo '  end;' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
-          echo 'end;' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
+          # 核心修复：使用filesanddirs单参数替代files/dirs拆分，规避Type解析异常
+          # 所有字符均为纯ASCII，无任何隐形字符/全角字符
+          $issPureContent = @'
+[Setup]
+AppName=GetIPviaWEB
+AppVersion=1.0.0
+DefaultDirName={pf}\GetIPviaWEB
+DefaultGroupName=GetIPviaWEB
+OutputDir=./installer
+OutputBaseFilename=GetIPviaWEB-Setup
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=admin
+SetupMutex=GetIPviaWEB-InstallMutex
+CloseApplications=yes
+CloseApplicationsFilter=GetIPviaWEB.exe
+
+[Files]
+Source: "GetIPviaWEB.exe"; DestDir: "{app}"
+
+[Icons]
+Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"
+Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"; Parameters: "/VERYSILENT"
+
+[Run]
+Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Flags: runhidden
+
+[UninstallRun]
+Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait
+Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait
+
+[UninstallDelete]
+; 官方推荐写法：filesanddirs 替代 files/dirs 拆分，避免Type解析异常
+Type: filesanddirs; Name: "{app}"
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  IsAdmin: Boolean;
+begin
+  IsAdmin := IsAdminLoggedOn();
+  if not IsAdmin then
+  begin
+    MsgBox('请以管理员身份运行安装包！' + #13#10 + '右键 → 以管理员身份运行', mbError, MB_OK);
+    Result := False;
+  end
+  else
+  begin
+    Result := True;
+  end;
+end;
+'@
           
-          # 强制转换为CRLF换行（Inno Setup要求）
-          $content = Get-Content GetIPviaWEB.iss -Raw
-          $content = $content -replace "`n", "`r`n"
+          # 关键步骤1：过滤所有非ASCII字符（仅保留可见ASCII+CRLF）
+          $issPureContent = $issPureContent -replace '[^\x20-\x7E\r\n]', ''
+          
+          # 关键步骤2：强制转为CRLF换行（Inno Setup 6.7.0强制要求）
+          $issPureContent = $issPureContent -replace "`n", "`r`n"
+          
+          # 关键步骤3：UTF8无BOM写入（绝对纯净，无任何解析干扰）
           $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-          [System.IO.File]::WriteAllText("$PWD/GetIPviaWEB.iss", $content, $utf8NoBom)
+          [System.IO.File]::WriteAllText("$PWD/GetIPviaWEB.iss", $issPureContent, $utf8NoBom)
           
-          # 验证[UninstallDelete]段内容
-          Write-Host "🔍 验证[UninstallDelete]段内容："
-          $udLines = Get-Content GetIPviaWEB.iss | Where-Object { $_ -match 'Type: files|Type: dirs' }
-          foreach ($line in $udLines) {
-              Write-Host "行内容：$line"
-              # 打印ASCII码，确保无异常
-              $ascii = $line.ToCharArray() | ForEach-Object { [int]$_ }
-              Write-Host "ASCII码：$($ascii -join ', ')"
-          }
+          # 验证[UninstallDelete]段（打印原始内容+ASCII码）
+          Write-Host "🔍 验证[UninstallDelete]段纯净性："
+          $udLine = Get-Content GetIPviaWEB.iss | Where-Object { $_ -match 'Type: filesanddirs' }
+          Write-Host "原始行：$udLine"
+          $asciiCodes = $udLine.ToCharArray() | ForEach-Object { [int]$_ }
+          Write-Host "ASCII码：$($asciiCodes -join ', ')"
           
-          # 验证文件是否生成
+          # 验证文件生成
           if (Test-Path "GetIPviaWEB.iss") {
               $size = (Get-Item GetIPviaWEB.iss).Length
               Write-Host "✅ ISS脚本生成成功，大小：$size 字节"
@@ -213,15 +214,13 @@ jobs:
           # 创建输出目录
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
           
-          # 获取ISS文件路径
+          # 获取ISS路径并编译
           $issPath = (Resolve-Path GetIPviaWEB.iss).Path
-          # 执行编译
           & ISCC.exe "$issPath" /O"./installer" /F"GetIPviaWEB-Setup" 2>&1
           
           # 检查编译结果
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ 安装包编译失败，退出码：$LASTEXITCODE"
-              # 打印ISS文件内容便于排查
               Write-Host "🔍 ISS文件完整内容："
               Get-Content GetIPviaWEB.iss
               exit 1
