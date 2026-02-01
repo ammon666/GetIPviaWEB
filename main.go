@@ -54,7 +54,7 @@ var (
 // ========== 命令行参数 ==========
 var (
 	flagBuild    = flag.Bool("build", false, "仅编译模式（CI环境）")
-	flagInterval = flag.Float64("interval", 1.0, "上报间隔（分钟）")
+	flagInterval = flag.Float64("interval", 60, "上报间隔（分钟）")
 	flagService  = flag.String("service", "", "服务操作：install/uninstall/start/stop/restart")
 )
 
