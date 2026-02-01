@@ -118,13 +118,13 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成修复后的ISS脚本（修复Code段语法错误） ==========
+      # ========== 生成修复后的ISS脚本（移除自杀进程逻辑） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（修复权限+进程残留+Code段语法）"
+          Write-Host "🔧 开始生成ISS脚本（修复权限+进程残留+Internal error）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
@@ -145,10 +145,12 @@ jobs:
           " DisableDirPage=no" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " DisableProgramGroupPage=no" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AllowNoIcons=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 强制安装完成后关闭所有相关进程
+          # 安全的进程管理配置（避免Internal error）
           " SetupMutex=GetIPviaWEB-InstallMutex" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplications=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplicationsFilter=GetIPviaWEB.exe" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " WizardStyle=modern" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " VersionInfoVersion=1.0.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # Files段保留Permissions（合法位置）
@@ -159,36 +161,22 @@ jobs:
           " Name: ""{commondesktop}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""; Flags: createonlyiffileexists" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 运行程序后不阻塞安装进程
-          " Filename: ""{app}\GetIPviaWEB.exe""; Description: ""启动 GetIPviaWEB 服务""; Flags: postinstall skipifsilent nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 运行程序后不阻塞安装进程（核心解决进程残留）
+          " Filename: ""{app}\GetIPviaWEB.exe""; Description: ""启动 GetIPviaWEB 服务""; Flags: postinstall skipifsilent nowait runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 卸载时先关闭进程
-          " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""/uninstall""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 卸载时先关闭进程（安全方式）
+          " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""/uninstall""; Flags: skipifdoesntexist runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # ========== 修复Code段语法错误 ==========
-          " [Code]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " procedure CurStepChanged(CurStep: TSetupStep);" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " var" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "   ResultCode: Integer;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "   SetupExeName: String;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "   if CurStep = ssPostInstall then" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "   begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "     // 获取安装程序文件名并强制关闭" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "     SetupExeName := ExtractFileName(ExpandConstant('{srcexe}'));" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "     Exec('taskkill.exe', '/F /IM ' + SetupExeName, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          "   end;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " end;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # 转换换行符为CRLF
           $content = Get-Content GetIPviaWEB.iss -Raw
           $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
           
-          Write-Host "✅ ISS脚本生成成功（已修复所有语法错误）"
+          Write-Host "✅ ISS脚本生成成功（已移除危险的自杀进程逻辑）"
         id: generate-iss
 
       # ========== 编译安装包 ==========
