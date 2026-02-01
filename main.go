@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/json"
+	"flag"   // 关键修复：添加flag包导入，解决undefined: flag报错
 	"fmt"
 	"net"
 	"net/http"
