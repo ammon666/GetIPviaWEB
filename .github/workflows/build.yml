@@ -118,7 +118,7 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成修复后的ISS脚本（解决权限+进程残留） ==========
+      # ========== 生成修复后的ISS脚本（移除非法的Setup段Permissions） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
@@ -128,32 +128,30 @@ jobs:
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 逐行写入修复后的ISS内容
+          # 逐行写入修复后的ISS内容（移除Setup段的Permissions）
           " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Force
           " AppName=GetIPviaWEB Service" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复1：改用用户目录（无需管理员权限）
+          # 改用用户目录（无需管理员权限）
           " DefaultDirName={userappdata}\GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " DefaultGroupName=GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " OutputDir=./installer" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " OutputBaseFilename=GetIPviaWEB-Setup" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Compression=lzma" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复2：声明管理员权限（兜底）
+          # 声明管理员权限（兜底）
           " PrivilegesRequired=admin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复3：禁用不必要的页面，加快安装
+          # 禁用不必要的页面，加快安装
           " DisableDirPage=no" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " DisableProgramGroupPage=no" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AllowNoIcons=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复4：添加目录权限
-          " Permissions=users-full" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复5：强制安装完成后关闭所有相关进程
+          # 强制安装完成后关闭所有相关进程
           " SetupMutex=GetIPviaWEB-InstallMutex" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplications=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplicationsFilter=GetIPviaWEB.exe" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复6：给文件添加完全控制权限
+          # Files段保留Permissions（合法位置）
           " Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion; Permissions: users-full" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Icons]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -161,17 +159,17 @@ jobs:
           " Name: ""{commondesktop}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""; Flags: createonlyiffileexists" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复7：运行程序后不阻塞安装进程
+          # 运行程序后不阻塞安装进程
           " Filename: ""{app}\GetIPviaWEB.exe""; Description: ""启动 GetIPviaWEB 服务""; Flags: postinstall skipifsilent nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复8：卸载时先关闭进程
+          # 卸载时先关闭进程
           " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""/uninstall""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 修复9：安装完成后强制结束安装程序进程
+          # 安装完成后强制结束安装程序进程
           " [Code]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " procedure CurStepChanged(CurStep: TSetupStep);" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -244,4 +242,4 @@ jobs:
           Write-Host "✅ Go程序：$(Test-Path GetIPviaWEB.exe)"
           Write-Host "✅ ISS脚本：$(Test-Path GetIPviaWEB.iss)"
           Write-Host "✅ 安装包：$(Test-Path ./installer/GetIPviaWEB-Setup.exe)"
-        id: final-checks
+        id: final-check
