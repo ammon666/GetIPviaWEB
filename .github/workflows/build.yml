@@ -13,10 +13,12 @@ jobs:
   build-windows:
     # 指定运行环境为Windows
     runs-on: windows-latest
-    # 全局环境变量：配置Go模块代理，确保UUID依赖拉取稳定
+    # 全局环境变量：配置Go代理 + 引入Secret（按需扩展）
     env:
       GOPROXY: "https://goproxy.cn,direct"
       GO111MODULE: "on"
+      # 【方式1】将Secret作为环境变量全局注入（可在任意步骤使用）
+      APP_SECRET: ${{ secrets.IP_MONITOR_SECRET }} # 替换为你的Secret名称
 
     # 任务步骤
     steps:
@@ -31,15 +33,22 @@ jobs:
           go-version: '1.21'
           cache: true
 
-      # 步骤3：整理依赖（仅拉取UUID，无认证问题）
+      # 步骤3：整理依赖
       - name: Install and tidy dependencies
         run: go mod tidy
 
-      # 步骤4：编译控制台可执行文件（移除Windows GUI参数）
-      - name: Build Windows executable
-        run: go build -ldflags="-s -w" -o ip-monitor.exe
+      # 步骤4：编译（支持2种Secret注入方式，选其一即可）
+      - name: Build Windows executable with Secret
+        env:
+          # 【方式2】仅在编译步骤注入Secret（更安全，缩小作用域）
+          COMPILE_SECRET: ${{ secrets.IP_MONITOR_COMPILE_SECRET }}
+        run: |
+          # 方式A：通过ldflags将Secret注入Go代码的变量中（推荐）
+          go build -ldflags="-s -w -X main.appSecret=${{ secrets.IP_MONITOR_SECRET }} -X main.compileSecret=${COMPILE_SECRET}" -o ip-monitor.exe
+          # 方式B：仅通过环境变量传递（需在Go代码中读取环境变量）
+          # go build -ldflags="-s -w" -o ip-monitor.exe
 
-      # 可选步骤：上传编译产物
+      # 可选步骤：上传编译产物（产物中已包含注入的Secret）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
