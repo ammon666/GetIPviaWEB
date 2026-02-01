@@ -29,13 +29,13 @@ function handleOptions() {
 async function handleReport(request, env) {
   // 验证API密钥
   if (!verifyAPIKey(request)) {
-    return new Response(JSON.stringify({
+    return setCORSHeaders(new Response(JSON.stringify({
       success: false,
       error: 'Invalid API Key'
     }), {
-      status: 401,
+      status: 200, // 改为200兼容Go程序（原401，避免客户端判定为失败）
       headers: { 'Content-Type': 'application/json' }
-    });
+    }));
   }
 
   try {
@@ -43,13 +43,13 @@ async function handleReport(request, env) {
     
     // 验证必需字段
     if (!data.uuid || !data.username || !data.networks) {
-      return new Response(JSON.stringify({
+      return setCORSHeaders(new Response(JSON.stringify({
         success: false,
         error: 'Missing required fields'
       }), {
-        status: 400,
+        status: 200, // 改为200兼容Go程序（原400）
         headers: { 'Content-Type': 'application/json' }
-      });
+      }));
     }
 
     // 准备存储的数据
@@ -105,13 +105,13 @@ async function handleReport(request, env) {
     }));
 
   } catch (error) {
-    return new Response(JSON.stringify({
+    return setCORSHeaders(new Response(JSON.stringify({
       success: false,
       error: error.message
     }), {
-      status: 500,
+      status: 200, // 改为200兼容Go程序（原500）
       headers: { 'Content-Type': 'application/json' }
-    });
+    }));
   }
 }
 
@@ -468,41 +468,6 @@ function generateErrorHTML(error) {
 </html>`;
 }
 
-// 主处理函数
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-
-    // 处理OPTIONS请求
-    if (request.method === 'OPTIONS') {
-      return handleOptions();
-    }
-
-    // API路由：接收数据上报
-    if (path === '/api/report' && request.method === 'POST') {
-      return await handleReport(request, env);
-    }
-
-    // 查询路由：展示设备信息
-    const viewMatch = path.match(/^\/view\/([a-f0-9\-]+)$/i);
-    if (viewMatch) {
-      return await handleView(viewMatch[1], env);
-    }
-
-    // 根路径：显示使用说明
-    if (path === '/' || path === '') {
-      return new Response(generateIndexHTML(), {
-        status: 200,
-        headers: { 'Content-Type': 'text/html; charset=utf-8' }
-      });
-    }
-
-    // 404
-    return new Response('Not Found', { status: 404 });
-  }
-};
-
 // 首页HTML
 function generateIndexHTML() {
   return `<!DOCTYPE html>
@@ -577,3 +542,55 @@ function generateIndexHTML() {
 </body>
 </html>`;
 }
+
+// 主处理函数（核心修复：严格限定/api/report仅处理POST）
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+
+    // 1. 优先处理OPTIONS预检请求（跨域必备）
+    if (request.method === 'OPTIONS') {
+      return handleOptions();
+    }
+
+    // 2. 严格限定 /api/report 仅处理 POST 请求
+    if (path === '/api/report') {
+      if (request.method === 'POST') {
+        return await handleReport(request, env);
+      } else {
+        // 非POST请求返回200 + JSON，避免Go程序404/405
+        return setCORSHeaders(new Response(JSON.stringify({
+          success: false,
+          error: 'Only POST method is allowed for /api/report'
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        }));
+      }
+    }
+
+    // 3. 查询路由：展示设备信息（仅GET）
+    const viewMatch = path.match(/^\/view\/([a-f0-9\-]+)$/i);
+    if (viewMatch && request.method === 'GET') {
+      return await handleView(viewMatch[1], env);
+    }
+
+    // 4. 根路径：显示使用说明（仅GET）
+    if ((path === '/' || path === '') && request.method === 'GET') {
+      return new Response(generateIndexHTML(), {
+        status: 200,
+        headers: { 'Content-Type': 'text/html; charset=utf-8' }
+      });
+    }
+
+    // 5. 所有未匹配的路由/方法，返回200 + JSON（兼容Go程序，避免404）
+    return setCORSHeaders(new Response(JSON.stringify({
+      success: false,
+      error: 'Resource not found'
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }));
+  }
+};

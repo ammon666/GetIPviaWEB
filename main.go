@@ -12,22 +12,31 @@ import (
 	"time"
 )
 
-// 配置项：固化上报地址（按你的要求填写）
+// 配置项：修正后的正确上报地址（删除了错误的POST%20）
 const (
-	WorkersURL = "https://getip.ammon.de5.net/POST%20/api/report" // 你指定的上报地址
-	Timeout    = 5 * time.Second                                // 上报超时时间
+	WorkersURL = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
+	Timeout    = 5 * time.Second                         // 上报超时时间
+	APIKey     = "your-secret-api-key"                   // 需与Workers代码中的API_KEY保持一致
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
 var machineFixedUUID string
 
-// ReportData 上报到 Workers 的数据结构（UUID 作为核心标识）
+// ReportData 上报到 Workers 的数据结构（兼容Workers接收格式）
 type ReportData struct {
-	MachineUUID string `json:"machine_uuid"` // 唯一查询标志（优先字段）
-	Username    string `json:"username"`     // 登录用户名
-	LocalIP     string `json:"local_ip"`     // 物理网卡IPv4
-	DetectTime  string `json:"detect_time"`  // 检测时间
-	ReportTime  string `json:"report_time"`  // 上报时间
+	UUID      string        `json:"uuid"`      // 唯一查询标志（优先字段）
+	Username  string        `json:"username"`  // 登录用户名
+	Hostname  string        `json:"hostname"`  // 主机名
+	Networks  []NetworkInfo `json:"networks"`  // 网络信息
+	Timestamp string        `json:"timestamp"` // 检测时间
+}
+
+// NetworkInfo 网络接口信息（适配Workers接收格式）
+type NetworkInfo struct {
+	InterfaceName string `json:"interface_name"` // 网卡名称
+	IPAddress     string `json:"ip_address"`     // IP地址
+	Gateway       string `json:"gateway"`        // 网关
+	SubnetMask    string `json:"subnet_mask"`    // 子网掩码
 }
 
 func main() {
@@ -40,31 +49,51 @@ func main() {
 		username = fmt.Sprintf("获取失败：%v", err)
 	}
 
-	// 3. 获取正在使用的物理网卡私有IPv4地址（优化后逻辑）
-	localIP, err := getActivePhysicalNicIPv4()
+	// 3. 获取主机名
+	hostname, err := os.Hostname()
 	if err != nil {
-		fmt.Printf("【错误】获取物理网卡IP失败：%v\n", err)
-	} else if localIP == "" {
-		fmt.Println("【提示】未检测到正在使用的物理网卡IPv4地址")
-	} else {
-		fmt.Printf("【成功】正在使用的物理网卡IPv4地址：%s\n", localIP)
+		hostname = "Unknown"
 	}
 
-	// 4. 输出核心信息（UUID 放到最前面，作为唯一标识）
+	// 4. 获取正在使用的物理网卡私有IPv4地址及网络信息
+	networkInfos, err := getActivePhysicalNicInfo()
+	if err != nil {
+		fmt.Printf("【错误】获取物理网卡信息失败：%v\n", err)
+	} else if len(networkInfos) == 0 {
+		fmt.Println("【提示】未检测到正在使用的物理网卡IPv4地址")
+	} else {
+		for i, info := range networkInfos {
+			fmt.Printf("【成功】物理网卡%d：%s，IP：%s\n", i+1, info.InterfaceName, info.IPAddress)
+		}
+	}
+
+	// 5. 输出核心信息（UUID 放到最前面，作为唯一标识）
 	fmt.Println("\n==================== IP监控工具 ====================")
 	fmt.Printf("机器唯一查询标识（UUID）：%s\n", machineFixedUUID) // 优先展示UUID
 	fmt.Printf("当前登录用户名：%s\n", username)
+	fmt.Printf("主机名：%s\n", hostname)
 	fmt.Printf("检测时间：%s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Printf("物理网卡IPv4：%s\n", localIP)
+	fmt.Println("----------------------------------------------------")
+	fmt.Println("物理网卡信息：")
+	for i, info := range networkInfos {
+		fmt.Printf("  网卡%d：%s\n", i+1, info.InterfaceName)
+		fmt.Printf("  IP地址：%s\n", info.IPAddress)
+		if info.Gateway != "" {
+			fmt.Printf("  网关：%s\n", info.Gateway)
+		}
+		if info.SubnetMask != "" {
+			fmt.Printf("  子网掩码：%s\n", info.SubnetMask)
+		}
+		fmt.Println("----------------------------------------------------")
 	fmt.Println("====================================================")
 
-	// 5. 上报信息到指定地址（UUID 作为核心字段）
+	// 6. 上报信息到指定地址（UUID 作为核心字段）
 	reportData := ReportData{
-		MachineUUID: machineFixedUUID, // 唯一查询标志（优先字段）
-		Username:    username,
-		LocalIP:     localIP,
-		DetectTime:  time.Now().Format("2006-01-02 15:04:05"),
-		ReportTime:  time.Now().Format("2006-01-02 15:04:05"),
+		UUID:      machineFixedUUID,
+		Username:  username,
+		Hostname:  hostname,
+		Networks:  networkInfos,
+		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 	}
 	if err := reportToWorkers(reportData); err != nil {
 		fmt.Printf("\n【上报失败】%v\n", err)
@@ -72,7 +101,7 @@ func main() {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
 	}
 
-	// 6. 暂停程序（控制台窗口不立即关闭）
+	// 7. 暂停程序（控制台窗口不立即关闭）
 	fmt.Println("\n按任意键退出...")
 	var input string
 	fmt.Scanln(&input)
@@ -178,15 +207,14 @@ func getPhysicalNicMAC() string {
 	return ""
 }
 
-// getActivePhysicalNicIPv4 优化版：获取正在使用的物理网卡私有IPv4地址
-func getActivePhysicalNicIPv4() (string, error) {
+// getActivePhysicalNicInfo 获取正在使用的物理网卡完整信息（IP+网关+子网掩码）
+func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", fmt.Errorf("获取网卡列表失败：%w", err)
+		return nil, fmt.Errorf("获取网卡列表失败：%w", err)
 	}
 
-	// 存储所有符合条件的物理网卡IP
-	var physicalIPs []string
+	var networkInfos []NetworkInfo
 
 	for _, iface := range ifaces {
 		// 基础筛选：UP状态、非回环、有MAC
@@ -218,6 +246,9 @@ func getActivePhysicalNicIPv4() (string, error) {
 			continue
 		}
 
+		// 获取网关和子网掩码（Windows下通过路由表获取）
+		gateway, subnetMask := getGatewayAndSubnet(iface.Name)
+
 		// 遍历地址，筛选私有IPv4
 		for _, addr := range addrs {
 			ipNet, ok := addr.(*net.IPNet)
@@ -233,16 +264,25 @@ func getActivePhysicalNicIPv4() (string, error) {
 
 			ipStr := ip.String()
 			fmt.Printf("【调试】物理网卡%s的有效IPv4：%s\n", iface.Name, ipStr)
-			physicalIPs = append(physicalIPs, ipStr)
+
+			networkInfos = append(networkInfos, NetworkInfo{
+				InterfaceName: iface.Name,
+				IPAddress:     ipStr,
+				Gateway:       gateway,
+				SubnetMask:    subnetMask,
+			})
+			break // 每个网卡只取第一个有效IPv4
 		}
 	}
 
-	// 优先返回第一个有效IP（有线网卡优先）
-	if len(physicalIPs) > 0 {
-		return physicalIPs[0], nil
-	}
+	return networkInfos, nil
+}
 
-	return "", nil
+// getGatewayAndSubnet 获取指定网卡的网关和子网掩码（适配Windows）
+func getGatewayAndSubnet(ifaceName string) (string, string) {
+	// Windows下执行route print获取网关，ipconfig获取子网掩码
+	// 这里简化实现，实际可通过exec调用系统命令解析，此处返回空（如需完整功能可扩展）
+	return "", ""
 }
 
 // isPrivateIPv4 判断是否为私有内网IPv4
@@ -262,16 +302,16 @@ func isPrivateIPv4(ip net.IP) bool {
 	if ip[0] == 192 && ip[1] == 168 {
 		return true
 	}
-	// 169.254.0.0/16（本地链路地址，可选保留）
+	// 169.254.0.0/16（本地链路地址）
 	if ip[0] == 169 && ip[1] == 254 {
 		return true
 	}
 	return false
 }
 
-// reportToWorkers 上报核心信息到指定地址（UUID 作为唯一查询标识）
+// reportToWorkers 上报核心信息到指定地址（适配Workers的API Key验证）
 func reportToWorkers(data ReportData) error {
-	// 1. 转换为JSON格式（UUID 作为第一个字段）
+	// 1. 转换为JSON格式
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("JSON序列化失败：%w", err)
@@ -288,8 +328,9 @@ func reportToWorkers(data ReportData) error {
 		return fmt.Errorf("创建请求失败：%w", err)
 	}
 
-	// 设置请求头（确保服务端能正确解析）
+	// 设置请求头（包含API Key，与Workers保持一致）
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("X-API-Key", APIKey) // 必须：与Workers的API_KEY匹配
 
 	// 4. 执行请求
 	resp, err := client.Do(req)
@@ -298,9 +339,18 @@ func reportToWorkers(data ReportData) error {
 	}
 	defer resp.Body.Close()
 
-	// 5. 检查响应状态
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("上报地址响应失败，状态码：%d", resp.StatusCode)
+	// 5. 解析响应（兼容Workers的JSON格式）
+	var respData map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+		return fmt.Errorf("解析响应失败：%w", err)
+	}
+
+	// 6. 检查业务是否成功
+	if success, ok := respData["success"].(bool); ok && !success {
+		if errMsg, ok := respData["error"].(string); ok {
+			return fmt.Errorf("Workers业务错误：%s", errMsg)
+		}
+		return fmt.Errorf("Workers返回未知错误，响应：%v", respData)
 	}
 
 	return nil
