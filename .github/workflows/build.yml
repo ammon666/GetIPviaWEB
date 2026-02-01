@@ -80,8 +80,8 @@ jobs:
           Write-Host "🔧 检查Inno Setup安装状态"
           $isccExists = $false
           try {
-              Get-Command "ISCC.exe" -ErrorAction SilentlyContinue | Out-Null
-              $isccExists = $true
+              $null = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
+              if ($?) { $isccExists = $true }
           } catch {
               $isccExists = $false
           }
@@ -98,7 +98,7 @@ jobs:
           }
 
           $isccTest = $false
-          & ISCC.exe /? 2>&1 | Out-Null
+          $null = & ISCC.exe /? 2>&1
           if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 1) {
               $isccTest = $true
           }
@@ -114,7 +114,6 @@ jobs:
           Write-Host "✅ 重置退出码，流程继续"
         id: check-inno
 
-      # ========== 生成ISS脚本（YAML兼容+Type参数修复） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
@@ -126,7 +125,7 @@ jobs:
           
           # 核心：用echo逐行写入（YAML 100%兼容，无字符串冲突）
           # 使用官方推荐的filesanddirs参数，规避Type解析异常
-          echo '[Setup]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
+          echo '[Setup]' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM
           echo 'AppName=GetIPviaWEB' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
           echo 'AppVersion=1.0.0' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
           echo 'DefaultDirName={pf}\GetIPviaWEB' | Out-File -FilePath GetIPviaWEB.iss -Encoding utf8NoBOM -Append
@@ -199,7 +198,6 @@ jobs:
           }
         id: generate-iss
 
-      # ========== 编译安装包 ==========
       - name: 编译图形化安装包
         run: |
           Set-StrictMode -Off
@@ -209,7 +207,7 @@ jobs:
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
           
           $issPath = (Resolve-Path GetIPviaWEB.iss).Path
-          & ISCC.exe "$issPath" /O"./installer" /F"GetIPviaWEB-Setup" 2>&1
+          $null = & ISCC.exe "$issPath" /O"./installer" /F"GetIPviaWEB-Setup" 2>&1
           
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ 安装包编译失败，退出码：$LASTEXITCODE"
@@ -229,7 +227,6 @@ jobs:
           }
         id: build-installer
 
-      # ========== 上传产物 ==========
       - name: 上传可执行文件
         uses: actions/upload-artifact@v4
         with:
