@@ -67,15 +67,15 @@ var (
 	displayName            = "IP自动上报服务"          // 服务显示名称
 	serviceDesc            = "后台运行，每次启动上报IP，仅首次打开弹浏览器"
 
-	// 业务配置（还原第一版的URL）
-	APIKey                 = "" // 编译时通过-ldflags注入：-X main.APIKey=你的密钥
-	WorkersURL             = "https://getip.ammon.de5.net/api/report"  // 第一版上报地址
-	ViewURLTemplate        = "https://getip.ammon.de5.net/view/%s"    // 第一版浏览器打开地址
+	// 业务配置（API Key通过编译注入，不硬编码）
+	APIKey                 = "" // 编译时通过-ldflags注入：-X main.APIKey=你的实际APIKey
+	WorkersURL             = "https://getip.ammon.de5.net/api/report"  // 上报地址
+	ViewURLTemplate        = "https://getip.ammon.de5.net/view/%s"    // 浏览器打开地址
 	Timeout                = 10 * time.Second
 	DefaultInterval        = 1 * time.Minute
 
 	// 全局变量
-	logger                 *Logger // 替换原有eventlog，使用增强日志
+	logger                 *Logger // 增强日志器
 	machineFixedUUID       string
 	isFirstRun             bool
 	reportInterval         time.Duration
@@ -105,13 +105,13 @@ func init() {
 		serviceName:   serviceName,
 	}
 
-	// 3. 校验APIKey（强制编译时注入）
+	// 3. 校验API Key（必须通过编译注入）
 	if APIKey == "" {
-		errMsg := "APIKey未配置！请使用编译命令：go build -ldflags \"-X main.APIKey=你的密钥\" -H=windowsgui"
+		errMsg := "APIKey未配置！请使用编译命令：go build -ldflags \"-X main.APIKey=你的实际APIKey\" -H=windowsgui"
 		logger.Error(errMsg)
 		panic(errMsg)
 	}
-	logger.Info("APIKey注入成功，长度：%d", len(APIKey))
+	logger.Info("APIKey注入成功（长度：%d），避免硬编码保障安全", len(APIKey))
 
 	// 4. 初始化上报间隔
 	reportInterval = DefaultInterval
@@ -126,14 +126,14 @@ func init() {
 		logger.Info("非首次运行，跳过浏览器弹窗")
 	}
 
-	// 6. 生成机器唯一标识（还原第一版逻辑）
+	// 6. 生成机器唯一标识
 	machineFixedUUID = getMachineUUID()
 	logger.Debug("生成机器唯一标识：%s", machineFixedUUID)
 }
 
-// getMachineUUID 生成机器唯一标识（还原第一版简化版）
+// getMachineUUID 生成机器唯一标识
 func getMachineUUID() string {
-	// 实际场景可替换为读取硬件信息（如主板序列号）
+	// 可替换为读取硬件信息（如主板序列号），此处保持简化
 	uuid := fmt.Sprintf("machine-%s", time.Now().UnixNano())
 	logger.Debug("生成UUID：%s", uuid)
 	return uuid
@@ -167,12 +167,11 @@ func (l *Logger) log(level, format string, v ...interface{}) {
 	funcName := "unknown"
 	if ok {
 		funcName = runtime.FuncForPC(pc).Name()
-		// 简化函数名（只保留最后一部分）
 		funcNameParts := strings.Split(funcName, ".")
 		if len(funcNameParts) > 0 {
 			funcName = funcNameParts[len(funcNameParts)-1]
 		}
-		file = filepath.Base(file) // 只保留文件名，不保留路径
+		file = filepath.Base(file)
 	}
 
 	// 2. 格式化日志内容
@@ -183,7 +182,7 @@ func (l *Logger) log(level, format string, v ...interface{}) {
 		timestamp, level, file, line, funcName, msg,
 	)
 
-	// 3. 检查日志文件大小，需要轮转则先轮转
+	// 3. 日志轮转检查
 	l.rotateLogIfNeeded()
 
 	// 4. 写入文件日志
@@ -197,7 +196,7 @@ func (l *Logger) log(level, format string, v ...interface{}) {
 		fmt.Printf("写入日志内容失败：%v，日志内容：%s\n", err, logContent)
 	}
 
-	// 5. 写入Windows事件日志（如果初始化成功）
+	// 5. 写入Windows事件日志
 	if l.eventLog != nil {
 		switch level {
 		case LogLevelDebug, LogLevelInfo:
@@ -212,10 +211,8 @@ func (l *Logger) log(level, format string, v ...interface{}) {
 
 // rotateLogIfNeeded 日志文件轮转（超过最大大小则备份）
 func (l *Logger) rotateLogIfNeeded() {
-	// 获取日志文件信息
 	fileInfo, err := os.Stat(l.logFile)
 	if err != nil {
-		// 文件不存在则无需轮转
 		if os.IsNotExist(err) {
 			return
 		}
@@ -223,12 +220,10 @@ func (l *Logger) rotateLogIfNeeded() {
 		return
 	}
 
-	// 未超过最大大小则无需轮转
 	if fileInfo.Size() < l.maxSize {
 		return
 	}
 
-	// 开始轮转：先删除最旧的备份，再重命名现有备份
 	l.Info("日志文件超过%dMB，开始轮转", l.maxSize/1024/1024)
 	for i := l.maxBackups - 1; i > 0; i-- {
 		src := fmt.Sprintf("%s.%d", l.logFile, i)
@@ -240,7 +235,6 @@ func (l *Logger) rotateLogIfNeeded() {
 		}
 	}
 
-	// 重命名当前日志为.1备份
 	if err := os.Rename(l.logFile, fmt.Sprintf("%s.1", l.logFile)); err != nil {
 		l.Error("重命名当前日志失败：%v", err)
 		return
@@ -249,16 +243,13 @@ func (l *Logger) rotateLogIfNeeded() {
 	l.Info("日志轮转完成，创建新日志文件")
 }
 
-// ======== 原有功能逻辑 ========
-// hideConsoleWindow 强制隐藏控制台窗口（修复API调用问题）
+// ======== 核心功能逻辑 ========
+// hideConsoleWindow 强制隐藏控制台窗口
 func hideConsoleWindow() {
 	logger.Debug("尝试隐藏控制台窗口")
-	// 调用Windows API获取控制台窗口句柄
 	hwnd, _, _ := procGetConsoleWindow.Call()
 	if hwnd != 0 {
-		// 隐藏窗口：ShowWindow(hwnd, SW_HIDE)
 		procShowWindow.Call(hwnd, uintptr(SW_HIDE))
-		// 从任务栏移除窗口
 		procSetWindowPos.Call(
 			hwnd,
 			0,
@@ -271,13 +262,12 @@ func hideConsoleWindow() {
 	}
 }
 
-// 主函数：服务入口（处理安装/卸载/运行）
+// 主函数：服务入口
 func main() {
 	logger.Info("程序启动，开始初始化")
-	// 强制隐藏控制台窗口（编译+运行双重保障）
 	hideConsoleWindow()
 
-	// 解析命令行参数
+	// 解析命令行参数（安装/卸载/启动/停止服务）
 	if len(os.Args) > 1 {
 		logger.Debug("解析命令行参数：%v", os.Args[1])
 		switch os.Args[1] {
@@ -314,7 +304,7 @@ func main() {
 		}
 	}
 
-	// 无参数：以服务方式运行（核心）
+	// 无参数：判断运行模式（服务/后台）
 	isService, err := svc.IsWindowsService()
 	if err != nil {
 		logger.Error("检测服务环境失败：%v", err)
@@ -322,18 +312,16 @@ func main() {
 	}
 	if isService {
 		logger.Info("检测到服务模式，以Windows服务方式运行")
-		// 作为Windows服务运行（完全后台，不受控制台影响）
 		if err := svc.Run(serviceName, &ipReportService{}); err != nil {
 			logger.Error("服务运行失败：%v", err)
 		}
 	} else {
 		logger.Info("检测到非服务模式，后台运行（无控制台）")
-		// 非服务模式也强制后台运行（无控制台）
 		runBackground()
 	}
 }
 
-// runBackground 非服务模式下的纯后台运行逻辑（无控制台、关闭控制台不终止）
+// runBackground 非服务模式后台运行
 func runBackground() {
 	// 立即上报IP
 	logger.Info("后台运行模式：立即执行首次上报")
@@ -343,7 +331,7 @@ func runBackground() {
 		logger.Info("首次上报成功")
 	}
 
-	// 首次运行弹浏览器（还原第一版URL）
+	// 首次运行弹浏览器
 	if isFirstRun {
 		go func() {
 			time.Sleep(1 * time.Second)
@@ -353,7 +341,7 @@ func runBackground() {
 			if err := openBrowser(url); err != nil {
 				logger.Error("打开浏览器失败：%v", err)
 			}
-			// 创建首次运行标记（后续不再弹）
+			// 写入首次运行标记
 			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0600); err != nil {
 				logger.Error("写入首次运行标记失败：%v", err)
 			} else {
@@ -362,27 +350,24 @@ func runBackground() {
 		}()
 	}
 
-	// 启动定时上报（无限循环，不受控制台关闭影响）
+	// 定时上报（无限阻塞）
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 	logger.Info("后台运行模式：开始定时上报（永久运行），间隔：%v", reportInterval)
-
-	// 阻塞主线程（防止程序退出）
 	select {}
 }
 
-// ipReportService：实现Windows服务接口
+// ipReportService 实现Windows服务接口
 type ipReportService struct{}
 
-// Execute：服务核心逻辑（Windows服务入口）
+// Execute 服务核心逻辑
 func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	logger.Debug("服务Execute方法启动，参数：%v", args)
-	// 1. 服务启动中状态
 	const acceptedCmds = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPauseAndContinue
 	changes <- svc.Status{State: svc.StartPending, WaitHint: 2000}
 	logger.Info("服务进入启动中状态")
 
-	// 2. 核心逻辑：立即上报IP（每次启动都执行）
+	// 立即上报IP
 	logger.Info("服务启动，立即执行首次上报")
 	if err := reportIP(); err != nil {
 		logger.Error("首次上报失败：%v", err)
@@ -390,17 +375,16 @@ func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 		logger.Info("首次上报成功")
 	}
 
-	// 3. 首次运行弹浏览器（还原第一版URL）
+	// 首次运行弹浏览器
 	if isFirstRun {
 		go func() {
-			time.Sleep(1 * time.Second) // 延迟1秒，避免服务未就绪
+			time.Sleep(1 * time.Second)
 			logger.Info("启动浏览器展示IP页面")
 			url := fmt.Sprintf(ViewURLTemplate, machineFixedUUID)
 			logger.Debug("浏览器打开URL：%s", url)
 			if err := openBrowser(url); err != nil {
 				logger.Error("打开浏览器失败：%v", err)
 			}
-			// 创建首次运行标记（后续不再弹）
 			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0600); err != nil {
 				logger.Error("写入首次运行标记失败：%v", err)
 			} else {
@@ -409,21 +393,20 @@ func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 		}()
 	}
 
-	// 4. 启动定时上报
+	// 定时上报
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 	logger.Debug("定时上报ticker已启动，间隔：%v", reportInterval)
 
-	// 5. 服务就绪：切换为运行状态
+	// 服务就绪
 	changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds}
 	logger.Info("服务已进入运行状态（完全后台）")
 
-	// 6. 服务主循环（处理指令+定时任务）
+	// 服务主循环
 loop:
 	for {
 		select {
 		case <-ticker.C:
-			// 定时上报
 			logger.Debug("定时上报触发")
 			if err := reportIP(); err != nil {
 				logger.Error("定时上报失败：%v", err)
@@ -431,16 +414,15 @@ loop:
 				logger.Info("定时上报成功")
 			}
 		case req := <-r:
-			// 处理服务控制指令（停止/暂停/查询等）
 			logger.Debug("收到服务控制指令：%v", req.Cmd)
 			switch req.Cmd {
 			case svc.Interrogate:
-				changes <- req.CurrentStatus // 响应状态查询
+				changes <- req.CurrentStatus
 				logger.Debug("响应服务状态查询指令")
 			case svc.Stop, svc.Shutdown:
 				logger.Info("收到停止/关机指令，服务即将退出")
 				changes <- svc.Status{State: svc.StopPending, WaitHint: 1000}
-				break loop // 退出主循环
+				break loop
 			case svc.Pause:
 				logger.Info("服务暂停")
 				ticker.Stop()
@@ -455,15 +437,16 @@ loop:
 		}
 	}
 
-	// 7. 服务停止
+	// 服务停止
 	changes <- svc.Status{State: svc.Stopped}
 	logger.Info("服务已停止")
 	return false, 0
 }
 
-// reportIP：上报IP到服务器（还原第一版逻辑）
+// reportIP 上报IP到服务器（核心修复：添加X-API-Key请求头）
 func reportIP() error {
 	logger.Debug("开始执行IP上报逻辑")
+
 	// 1. 获取公网IP
 	logger.Debug("尝试获取公网IP")
 	ip, err := getPublicIP()
@@ -472,9 +455,9 @@ func reportIP() error {
 	}
 	logger.Debug("获取到公网IP：%s", ip)
 
-	// 2. 构造上报数据（还原第一版字段）
+	// 2. 构造上报数据（匹配服务端要求）
 	payload := map[string]string{
-		"api_key":   APIKey,
+		"api_key":   APIKey,       // 兼容字段（保留）
 		"uuid":      machineFixedUUID,
 		"ip":        ip,
 		"timestamp": time.Now().Format(time.RFC3339),
@@ -485,15 +468,18 @@ func reportIP() error {
 	}
 	logger.Debug("上报数据序列化完成：%s", string(payloadBytes))
 
-	// 3. 发送HTTP请求（使用第一版的WorkersURL）
-	client := &http.Client{Timeout: Timeout}
+	// 3. 创建POST请求（核心修复：添加X-API-Key请求头）
 	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("创建HTTP请求失败：%v", err)
 	}
+	// 必须设置的请求头（解决403核心）
 	req.Header.Set("Content-Type", "application/json")
-	logger.Debug("HTTP请求已创建，目标URL：%s", WorkersURL)
+	req.Header.Set("X-API-Key", APIKey) // 携带编译注入的API Key到请求头
+	logger.Debug("已添加X-API-Key请求头（长度：%d）", len(APIKey))
 
+	// 4. 发送请求
+	client := &http.Client{Timeout: Timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送HTTP请求失败：%v", err)
@@ -501,17 +487,34 @@ func reportIP() error {
 	defer resp.Body.Close()
 	logger.Debug("收到HTTP响应，状态码：%d", resp.StatusCode)
 
-	// 4. 校验响应
+	// 5. 解析响应
+	respBody, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取响应体失败：%v", err)
+	}
+	logger.Debug("响应体内容：%s", string(respBody))
+
+	// 6. 校验响应状态
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("服务器返回错误状态码：%d，响应内容：%s", resp.StatusCode, string(body))
+		return fmt.Errorf("服务器返回错误：%d，内容：%s", resp.StatusCode, string(respBody))
+	}
+
+	// 7. 校验业务响应
+	var result map[string]interface{}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		logger.Warn("解析响应JSON失败（非致命）：%v", err)
+		return nil // 响应状态码200，仅JSON解析失败不影响上报结果
+	}
+	if success, ok := result["success"].(bool); ok && !success {
+		errorMsg, _ := result["error"].(string)
+		return fmt.Errorf("上报业务失败：%s", errorMsg)
 	}
 
 	logger.Debug("IP上报成功完成")
 	return nil
 }
 
-// getPublicIP：获取公网IP（还原第一版逻辑）
+// getPublicIP 获取公网IP
 func getPublicIP() (string, error) {
 	logger.Debug("调用ipify.org获取公网IP")
 	client := &http.Client{Timeout: Timeout}
@@ -532,14 +535,13 @@ func getPublicIP() (string, error) {
 	return ip, nil
 }
 
-// openBrowser：Windows后台打开浏览器（无控制台窗口，还原第一版逻辑）
+// openBrowser 后台打开浏览器
 func openBrowser(url string) error {
 	logger.Debug("尝试打开浏览器，URL：%s", url)
-	// 关键：设置进程属性，隐藏控制台窗口
 	cmd := exec.Command("cmd", "/c", "start", "", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: CREATE_NO_WINDOW, // 修复常量定义问题
+		CreationFlags: CREATE_NO_WINDOW,
 	}
 	if err := cmd.Start(); err != nil {
 		logger.Error("启动浏览器进程失败：%v", err)
@@ -549,10 +551,9 @@ func openBrowser(url string) error {
 	return nil
 }
 
-// ---------- 服务安装/卸载/启停 辅助函数 ----------
+// ======== 服务安装/卸载/启停辅助函数 ========
 func installService() error {
 	logger.Debug("开始安装服务：%s", serviceName)
-	// 1. 连接服务管理器
 	m, err := mgr.Connect()
 	if err != nil {
 		logger.Error("连接服务管理器失败：%v", err)
@@ -560,14 +561,14 @@ func installService() error {
 	}
 	defer m.Disconnect()
 
-	// 2. 检查服务是否已存在
+	// 检查服务是否已存在
 	if _, err := m.OpenService(serviceName); err == nil {
 		errMsg := fmt.Sprintf("服务%s已存在", serviceName)
 		logger.Warn(errMsg)
 		return fmt.Errorf(errMsg)
 	}
 
-	// 3. 获取当前程序路径
+	// 获取程序路径
 	exePath, err := os.Executable()
 	if err != nil {
 		logger.Error("获取程序路径失败：%v", err)
@@ -575,14 +576,14 @@ func installService() error {
 	}
 	logger.Debug("程序路径：%s", exePath)
 
-	// 4. 创建服务（核心：正确配置服务参数）
+	// 创建服务
 	s, err := m.CreateService(
 		serviceName,
 		exePath,
 		mgr.Config{
 			DisplayName: displayName,
 			Description: serviceDesc,
-			StartType:   mgr.StartAutomatic, // 开机自动启动（完全后台）
+			StartType:   mgr.StartAutomatic,
 		},
 	)
 	if err != nil {
@@ -591,10 +592,9 @@ func installService() error {
 	}
 	defer s.Close()
 
-	// 5. 注册事件日志（可选，增强日志）
+	// 注册事件日志
 	if err := eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
 		logger.Warn("注册事件日志失败：%v", err)
-		// 非致命错误，继续执行
 	}
 
 	logger.Info("服务%s安装成功", serviceName)
@@ -603,7 +603,7 @@ func installService() error {
 
 func uninstallService() error {
 	logger.Debug("开始卸载服务：%s", serviceName)
-	// 1. 先停止服务（如果运行中）
+	// 先停止服务
 	if err := stopService(); err != nil {
 		if !strings.Contains(err.Error(), "服务未运行") {
 			logger.Error("停止服务失败：%v", err)
@@ -612,7 +612,7 @@ func uninstallService() error {
 		logger.Warn("服务未运行，跳过停止步骤")
 	}
 
-	// 2. 连接服务管理器
+	// 连接服务管理器
 	m, err := mgr.Connect()
 	if err != nil {
 		logger.Error("连接服务管理器失败：%v", err)
@@ -620,7 +620,7 @@ func uninstallService() error {
 	}
 	defer m.Disconnect()
 
-	// 3. 删除服务
+	// 删除服务
 	s, err := m.OpenService(serviceName)
 	if err != nil {
 		errMsg := fmt.Sprintf("服务%s不存在：%v", serviceName, err)
@@ -634,7 +634,7 @@ func uninstallService() error {
 		return err
 	}
 
-	// 4. 移除事件日志
+	// 移除事件日志
 	if err := eventlog.Remove(serviceName); err != nil {
 		logger.Warn("移除事件日志失败：%v", err)
 	}
