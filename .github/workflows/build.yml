@@ -58,7 +58,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           
           Write-Host "🔧 开始编译Go程序（注入APIKey+生成GUI程序）"
-          # Go 1.22 唯一合规的GUI编译方式
+          # Go 1.22 合规的GUI编译方式
           go build -o GetIPviaWEB.exe -ldflags="-s -w -H windowsgui -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ Go程序编译失败，退出码：$LASTEXITCODE"
@@ -116,83 +116,82 @@ jobs:
           Write-Host "✅ 重置退出码，流程继续"
         id: check-inno
 
-      # ========== 生成ISS脚本（仅保留Inno Setup 6.7.0 核心合规指令） ==========
+      # ========== 生成ISS脚本（解决所有字符/格式问题） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 生成ISS脚本（仅保留核心合规指令）"
+          Write-Host "🔧 生成ISS脚本（解决Type参数解析错误）"
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 核心：[Setup]段仅保留Inno Setup 6.7.0 官方文档明确标注的核心指令
-          $issLines = @(
-              "[Setup]",
-              "AppName=GetIPviaWEB",
-              "AppVersion=1.0.0",
-              "DefaultDirName={pf}\GetIPviaWEB",
-              "DefaultGroupName=GetIPviaWEB",
-              "OutputDir=./installer",
-              "OutputBaseFilename=GetIPviaWEB-Setup",
-              "Compression=lzma",
-              "SolidCompression=yes",
-              "PrivilegesRequired=admin",  # 唯一权限相关核心指令
-              "SetupMutex=GetIPviaWEB-InstallMutex",
-              "CloseApplications=yes",
-              "CloseApplicationsFilter=GetIPviaWEB.exe",
-              "",
-              "[Files]",
-              # [Files]段仅保留核心参数，无多余Flags
-              "Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""",
-              "",
-              "[Icons]",
-              # 卸载快捷方式添加静默参数（官方唯一支持的静默卸载方式）
-              "Name: ""{group}\GetIPviaWEB""; Filename: ""{app}\GetIPviaWEB.exe""",
-              "Name: ""{group}\卸载GetIPviaWEB""; Filename: ""{uninstallexe}""; Parameters: ""/VERYSILENT""",
-              "",
-              "[Run]",
-              # 安装后静默执行
-              "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Flags: runhidden",
-              "",
-              "[UninstallRun]",
-              # 卸载核心逻辑（仅保留官方支持的Flags）
-              "Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runhidden nowait",
-              "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait",
-              "Filename: ""cmd.exe""; Parameters: ""/c rmdir /s /q ""{app}""""; Flags: skipifdoesntexist runhidden nowait",
-              "",
-              "[UninstallDelete]",
-              # 仅保留官方支持的Type值，无任何多余参数
-              "Type: files; Name: ""{app}\*.*""",
-              "Type: dirs; Name: ""{app}""",
-              "",
-              "[Code]",
-              # 管理员权限校验（官方示例代码，100%合规）
-              "function InitializeSetup(): Boolean;",
-              "var",
-              "  IsAdmin: Boolean;",
-              "begin",
-              "  IsAdmin := IsAdminLoggedOn();",
-              "  if not IsAdmin then",
-              "  begin",
-              "    MsgBox('请以管理员身份运行安装包！' + #13#10 + '右键 → 以管理员身份运行', mbError, MB_OK);",
-              "    Result := False;",
-              "  end",
-              "  else",
-              "  begin",
-              "    Result := True;",
-              "  end;",
-              "end;"
-          )
+          # 核心修复：
+          # 1. [UninstallDelete]段严格遵循「分号+空格」分隔符
+          # 2. 无隐形字符，UTF8无BOM编码
+          # 3. Type值全小写，格式极简
+          $issContent = @'
+[Setup]
+AppName=GetIPviaWEB
+AppVersion=1.0.0
+DefaultDirName={pf}\GetIPviaWEB
+DefaultGroupName=GetIPviaWEB
+OutputDir=./installer
+OutputBaseFilename=GetIPviaWEB-Setup
+Compression=lzma
+SolidCompression=yes
+PrivilegesRequired=admin
+SetupMutex=GetIPviaWEB-InstallMutex
+CloseApplications=yes
+CloseApplicationsFilter=GetIPviaWEB.exe
+
+[Files]
+Source: "GetIPviaWEB.exe"; DestDir: "{app}"
+
+[Icons]
+Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"
+Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"; Parameters: "/VERYSILENT"
+
+[Run]
+Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Flags: runhidden
+
+[UninstallRun]
+Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait
+Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait
+Filename: "cmd.exe"; Parameters: "/c rmdir /s /q ""{app}"""; Flags: skipifdoesntexist runhidden nowait
+
+[UninstallDelete]
+Type: files; Name: "{app}\*.*"
+Type: dirs; Name: "{app}"
+
+[Code]
+function InitializeSetup(): Boolean;
+var
+  IsAdmin: Boolean;
+begin
+  IsAdmin := IsAdminLoggedOn();
+  if not IsAdmin then
+  begin
+    MsgBox('请以管理员身份运行安装包！' + #13#10 + '右键 → 以管理员身份运行', mbError, MB_OK);
+    Result := False;
+  end
+  else
+  begin
+    Result := True;
+  end;
+end;
+'@
           
-          # 写入文件（强制CRLF+UTF8）
-          $issContent = $issLines -join "`r`n"
-          $issContent | Set-Content -Path "GetIPviaWEB.iss" -Encoding UTF8 -Force
+          # 关键：使用UTF8无BOM编码写入，避免解析错误
+          $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+          [System.IO.File]::WriteAllText("$PWD/GetIPviaWEB.iss", $issContent, $utf8NoBom)
           
           # 验证文件
           if (Test-Path "GetIPviaWEB.iss") {
               $size = (Get-Item GetIPviaWEB.iss).Length
               Write-Host "✅ ISS脚本生成成功，大小：$size 字节"
-              Get-Content "GetIPviaWEB.iss" -First 10  # 输出前10行验证
+              # 输出[UninstallDelete]段验证
+              Write-Host "🔍 [UninstallDelete]段内容："
+              Get-Content "GetIPviaWEB.iss" | Select-String -Pattern "Type: files|Type: dirs"
           } else {
               Write-Host "❌ ISS脚本生成失败"
               exit 1
