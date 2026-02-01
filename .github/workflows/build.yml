@@ -118,67 +118,95 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成最终版ISS脚本（彻底简化Flags） ==========
+      # ========== 生成ISS脚本（添加管理员校验+修改文件名） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（彻底简化Flags）"
+          Write-Host "🔧 开始生成ISS脚本（添加管理员校验+修改文件名）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 逐行写入最终版ISS内容（仅保留基础Flags）
+          # 逐行写入ISS内容（核心新增[Code]段做管理员校验）
           " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Force
           " AppName=GetIPviaWEB Service" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 默认安装路径（路径选择页展示）
           " DefaultDirName={userappdata}\GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 开始菜单程序组（强制默认，不展示选择页）
           " DefaultGroupName=GetIPviaWEB Service" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " OutputDir=./installer" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " OutputBaseFilename=GetIPviaWEB-Setup" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 需求2：修改安装包名称，添加(需要管理员权限)标注
+          " OutputBaseFilename=GetIPviaWEB-Setup(需要管理员权限)" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Compression=lzma" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 全局管理员权限（关键：整个安装包以管理员运行，无需Run段额外权限标志）
+          # 全局权限配置（兜底）
           " PrivilegesRequired=admin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # ========== 核心：仅保留必要的界面控制 ==========
-          " DisableWelcomePage=yes"          # 禁用欢迎页
-          " DisableProgramGroupPage=yes"     # 省略开始菜单文件夹选择页
-          " DisableReadyPage=yes"            # 省略准备安装确认页
-          " DisableFinishedPage=yes"         # 禁用完成页
-          " DisableDirEdit=no"               # 保留路径编辑功能
-          " DirExistsWarning=yes"            # 路径已存在时提示
-          # ========== 进程管理配置 ==========
+          # 界面控制
+          " DisableWelcomePage=yes"
+          " DisableProgramGroupPage=yes"
+          " DisableReadyPage=yes"
+          " DisableFinishedPage=yes"
+          " DisableDirEdit=no"
+          " DirExistsWarning=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 进程管理
           " SetupMutex=GetIPviaWEB-InstallMutex" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplications=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplicationsFilter=GetIPviaWEB.exe" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # [Files]段
           " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 仅复制程序文件，赋予所有用户完全权限
           " Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion; Permissions: users-full" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # [Icons]段
           " [Icons]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 生成开始菜单快捷方式
           " Name: ""{group}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # [Run]段
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 核心修复：仅保留postinstall（安装后执行），移除所有未知Flags
           " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # [UninstallRun]段
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 卸载段仅保留基础Flags
           " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # [UninstallDelete]段
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
-          # 转换换行符为CRLF（Inno Setup要求）
+          # 核心新增：[Code]段（需求1：启动安装时校验管理员权限，非管理员直接退出）
+          " [Code]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " function InitializeSetup(): Boolean;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " var" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   IsAdmin: Boolean;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   // 校验是否为管理员权限" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   IsAdmin := CheckWin32Version(6, 0) and IsAdminLoggedOn();" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   if not IsAdmin then" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     // 弹出错误提示框" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     MsgBox('当前未以管理员权限运行安装包！' + #13#10 + '请右键点击安装包，选择「以管理员身份运行」后重试。', mbError, MB_OK);" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     // 返回False终止安装" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     Result := False;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   end" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   else" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   begin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     // 管理员权限正常，继续安装" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "     Result := True;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          "   end;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " end;" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          
+          # 转换换行符为CRLF
           $content = Get-Content GetIPviaWEB.iss -Raw
           $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
           
-          Write-Host "✅ ISS脚本生成成功（彻底简化Flags）"
+          Write-Host "✅ ISS脚本生成成功（添加管理员校验+修改文件名）"
         id: generate-iss
 
       # ========== 编译安装包 ==========
@@ -193,17 +221,18 @@ jobs:
           
           # 编译安装包
           $issPath = (Resolve-Path GetIPviaWEB.iss).Path
-          & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup" "$issPath" 2>&1
+          & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup(需要管理员权限)" "$issPath" 2>&1
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ 安装包编译失败，退出码：$LASTEXITCODE"
               exit 1
           }
           
           # 验证安装包
-          $setupFile = "./installer/GetIPviaWEB-Setup.exe"
+          $setupFile = "./installer/GetIPviaWEB-Setup(需要管理员权限).exe"
           if (Test-Path $setupFile) {
               $fileSize = (Get-Item $setupFile).Length
               Write-Host "✅ 安装包编译成功，文件大小：$fileSize 字节"
+              Write-Host "✅ 安装包名称：$(Split-Path $setupFile -Leaf)"
           } else {
               Write-Host "❌ 未找到安装包文件"
               exit 1
@@ -223,7 +252,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: GetIPviaWEB-Windows-Setup
-          path: ./installer/GetIPviaWEB-Setup.exe
+          path: ./installer/GetIPviaWEB-Setup(需要管理员权限).exe
           retention-days: 7
         id: upload-installer
 
@@ -235,5 +264,5 @@ jobs:
           Write-Host "🎉 全流程执行完成！"
           Write-Host "✅ Go程序：$(Test-Path GetIPviaWEB.exe)"
           Write-Host "✅ ISS脚本：$(Test-Path GetIPviaWEB.iss)"
-          Write-Host "✅ 安装包：$(Test-Path ./installer/GetIPviaWEB-Setup.exe)"
+          Write-Host "✅ 安装包：$(Test-Path ./installer/GetIPviaWEB-Setup(需要管理员权限).exe)"
         id: final-check
