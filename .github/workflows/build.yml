@@ -118,17 +118,17 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成最终版ISS脚本（修复Flags错误） ==========
+      # ========== 生成最终版ISS脚本（彻底简化Flags） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（修复Flags错误）"
+          Write-Host "🔧 开始生成ISS脚本（彻底简化Flags）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 逐行写入最终版ISS内容
+          # 逐行写入最终版ISS内容（仅保留基础Flags）
           " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Force
           " AppName=GetIPviaWEB Service" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -140,47 +140,45 @@ jobs:
           " OutputBaseFilename=GetIPviaWEB-Setup" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Compression=lzma" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 管理员权限（兜底解决权限问题）
+          # 全局管理员权限（关键：整个安装包以管理员运行，无需Run段额外权限标志）
           " PrivilegesRequired=admin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # ========== 核心：彻底省略多余步骤 ==========
+          # ========== 核心：仅保留必要的界面控制 ==========
           " DisableWelcomePage=yes"          # 禁用欢迎页
-          " DisableProgramGroupPage=yes"     # 彻底省略开始菜单文件夹选择页
-          " DisableReadyPage=yes"            # 彻底省略准备安装确认页
+          " DisableProgramGroupPage=yes"     # 省略开始菜单文件夹选择页
+          " DisableReadyPage=yes"            # 省略准备安装确认页
           " DisableFinishedPage=yes"         # 禁用完成页
-          " DisableStartupPrompt=yes"        # 禁用启动提示
-          " DisableDirEdit=no"               # 仅保留路径编辑功能
+          " DisableDirEdit=no"               # 保留路径编辑功能
           " DirExistsWarning=yes"            # 路径已存在时提示
-          " WizardStyle=modern"              # 现代向导样式，减少兼容性问题
           # ========== 进程管理配置 ==========
           " SetupMutex=GetIPviaWEB-InstallMutex" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplications=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " CloseApplicationsFilter=GetIPviaWEB.exe" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Files]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 仅复制程序文件
+          # 仅复制程序文件，赋予所有用户完全权限
           " Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion; Permissions: users-full" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Icons]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 仅生成开始菜单快捷方式（默认名称，无用户选择）
+          # 生成开始菜单快捷方式
           " Name: ""{group}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 核心修复：替换runasadmin为runashighest，保留postinstall/skipifsilent
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall skipifsilent runashighest" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 核心修复：仅保留postinstall（安装后执行），移除所有未知Flags
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 卸载时同样使用runashighest
-          " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runashighest" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 卸载段仅保留基础Flags
+          " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
-          # 转换换行符为CRLF
+          # 转换换行符为CRLF（Inno Setup要求）
           $content = Get-Content GetIPviaWEB.iss -Raw
           $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
           
-          Write-Host "✅ ISS脚本生成成功（修复Flags错误）"
+          Write-Host "✅ ISS脚本生成成功（彻底简化Flags）"
         id: generate-iss
 
       # ========== 编译安装包 ==========
