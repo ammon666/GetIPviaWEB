@@ -165,13 +165,13 @@ jobs:
           " Name: ""{group}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 启动程序后不阻塞安装进程
-          " Filename: ""{app}\GetIPviaWEB.exe""; Description: ""启动 GetIPviaWEB 服务""; Flags: postinstall skipifsilent nowait runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 核心修改：传递install参数，以管理员身份运行，阻塞等待安装完成
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall skipifsilent runasadmin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # 卸载时先关闭进程
           " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""/uninstall""; Flags: skipifdoesntexist runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runasadmin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append

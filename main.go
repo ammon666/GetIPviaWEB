@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
@@ -28,6 +29,7 @@ import (
 // 手动声明Windows API常量
 const (
 	SW_HIDE            = 0
+	SW_SHOW            = 1
 	SWP_HIDEWINDOW     = 0x0080
 	SWP_NOMOVE         = 0x0002
 	SWP_NOSIZE         = 0x0001
@@ -122,8 +124,8 @@ func init() {
 	logPath = filepath.Join(logDir, "service.log")
 	firstRunFlag = filepath.Join(installDir, "first_run.flag")
 
-	// 3. 创建必要目录（安装目录/logs）
-	if err := os.MkdirAll(logDir, 0700); err != nil {
+	// 3. 创建必要目录（安装目录/logs），修改权限为0777确保可写入
+	if err := os.MkdirAll(logDir, 0777); err != nil {
 		panic(fmt.Sprintf("创建日志目录失败：%v", err))
 	}
 
@@ -174,6 +176,25 @@ func init() {
 	logger.Debug("设备UUID生成完成：%s", machineFixedUUID)
 }
 
+// MessageBox 调用Windows API弹出消息框
+func MessageBox(hwnd uintptr, text, caption string, uType uintptr) uintptr {
+	user32 := syscall.NewLazyDLL("user32.dll")
+	msgBox := user32.NewProc("MessageBoxW")
+	textPtr, _ := syscall.UTF16PtrFromString(text)
+	captionPtr, _ := syscall.UTF16PtrFromString(caption)
+	ret, _, _ := msgBox.Call(hwnd, uintptr(unsafe.Pointer(textPtr)), uintptr(unsafe.Pointer(captionPtr)), uType)
+	return ret
+}
+
+// showConsoleWindow 显示控制台窗口
+func showConsoleWindow() {
+	logger.Debug("显示控制台窗口")
+	hwnd, _, _ := procGetConsoleWindow.Call()
+	if hwnd != 0 {
+		procShowWindow.Call(hwnd, uintptr(SW_SHOW))
+	}
+}
+
 // ========== 安装/卸载核心函数 ==========
 // Install 完整安装流程：拷贝程序到Program Files + 注册服务 + 写入卸载信息 + 启动服务
 func Install() error {
@@ -181,27 +202,32 @@ func Install() error {
 
 	// 1. 检查管理员权限
 	if !isAdmin() {
+		MessageBox(0, "安装需要管理员权限，请右键以管理员身份运行程序！", "权限不足", 0x00000010) // MB_ICONERROR
 		return fmt.Errorf("安装需要管理员权限，请右键以管理员身份运行")
 	}
 
 	// 2. 拷贝程序到默认安装目录（C:\Program Files\IPReportService）
 	if err := copyProgramToInstallDir(); err != nil {
+		MessageBox(0, fmt.Sprintf("拷贝程序失败：%v", err), "安装错误", 0x00000010)
 		return fmt.Errorf("拷贝程序失败：%v", err)
 	}
 
 	// 3. 注册Windows服务（自动启动）
 	if err := installService(); err != nil {
+		MessageBox(0, fmt.Sprintf("注册服务失败：%v", err), "安装错误", 0x00000010)
 		return fmt.Errorf("注册服务失败：%v", err)
 	}
 
 	// 4. 写入卸载信息到注册表（添加/删除程序可见）
 	if err := writeUninstallInfo(); err != nil {
+		MessageBox(0, fmt.Sprintf("写入卸载信息失败：%v", err), "安装错误", 0x00000010)
 		return fmt.Errorf("写入卸载信息失败：%v", err)
 	}
 
 	// 5. 启动服务
 	if err := startService(); err != nil {
 		logger.Warn("服务注册成功，但启动失败：%v", err)
+		MessageBox(0, fmt.Sprintf("服务注册成功，但启动失败：%v", err), "安装警告", 0x00000030) // MB_ICONWARNING
 	}
 
 	// 6. 创建首次运行标志
@@ -210,6 +236,7 @@ func Install() error {
 	}
 
 	logger.Info("安装完成！服务已注册并启动，卸载可通过系统「添加/删除程序」或运行：%s uninstall", filepath.Join(defaultInstallDir, "IPReportService.exe"))
+	MessageBox(0, "服务安装成功！已设置开机自动启动", "安装完成", 0x00000040) // MB_ICONINFORMATION
 	return nil
 }
 
@@ -219,6 +246,7 @@ func Uninstall() error {
 
 	// 1. 检查管理员权限
 	if !isAdmin() {
+		MessageBox(0, "卸载需要管理员权限，请右键以管理员身份运行程序！", "权限不足", 0x00000010)
 		return fmt.Errorf("卸载需要管理员权限，请右键以管理员身份运行")
 	}
 
@@ -226,12 +254,14 @@ func Uninstall() error {
 	if err := stopService(); err != nil {
 		if !strings.Contains(err.Error(), "服务未运行") {
 			logger.Warn("停止服务失败：%v", err)
+			MessageBox(0, fmt.Sprintf("停止服务失败：%v", err), "卸载警告", 0x00000030)
 		}
 	}
 
 	// 3. 删除服务
 	m, err := mgr.Connect()
 	if err != nil {
+		MessageBox(0, fmt.Sprintf("连接服务管理器失败：%v", err), "卸载错误", 0x00000010)
 		return fmt.Errorf("连接服务管理器失败：%v", err)
 	}
 	defer m.Disconnect()
@@ -239,6 +269,7 @@ func Uninstall() error {
 	s, err := m.OpenService(serviceName)
 	if err == nil {
 		if err := s.Delete(); err != nil {
+			MessageBox(0, fmt.Sprintf("删除服务失败：%v", err), "卸载错误", 0x00000010)
 			return fmt.Errorf("删除服务失败：%v", err)
 		}
 		s.Close()
@@ -248,14 +279,17 @@ func Uninstall() error {
 	// 4. 清理卸载注册表项
 	if err := deleteUninstallInfo(); err != nil {
 		logger.Warn("清理卸载信息失败：%v", err)
+		MessageBox(0, fmt.Sprintf("清理卸载信息失败：%v", err), "卸载警告", 0x00000030)
 	}
 
 	// 5. 删除安装目录（含日志、程序文件）
 	if err := os.RemoveAll(defaultInstallDir); err != nil {
+		MessageBox(0, fmt.Sprintf("删除安装目录失败：%v", err), "卸载错误", 0x00000010)
 		return fmt.Errorf("删除安装目录失败：%v", err)
 	}
 
 	logger.Info("卸载完成！所有文件和服务已清理")
+	MessageBox(0, "服务卸载完成！所有文件和服务已清理", "卸载完成", 0x00000040)
 	return nil
 }
 
@@ -644,6 +678,15 @@ func installService() error {
 	}
 	defer s.Close()
 
+	// 校验服务启动类型是否设置成功
+	sConfig, err := s.QueryConfig()
+	if err != nil {
+		return fmt.Errorf("校验服务配置失败：%v", err)
+	}
+	if sConfig.StartType != mgr.StartAutomatic {
+		return fmt.Errorf("服务启动类型设置失败，当前为：%v", sConfig.StartType)
+	}
+
 	if err := eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
 		logger.Warn("注册事件日志失败：%v", err)
 	}
@@ -767,81 +810,53 @@ func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 		logger.Info("服务启动后首次上报成功")
 	}
 
-	// 首次运行弹浏览器
-	if isFirstRun {
-		go func() {
-			time.Sleep(1 * time.Second)
-			url := fmt.Sprintf(ViewURLTemplate, machineFixedUUID)
-			if err := openBrowser(url); err != nil {
-				logger.Error("打开浏览器失败：%v", err)
-			}
-			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0600); err != nil {
-				logger.Error("写入首次运行标志失败：%v", err)
-			}
-		}()
-	}
+	// 启动定时上报
+	go runBackground()
 
-	// 定时上报
-	ticker := time.NewTicker(reportInterval)
-	defer ticker.Stop()
-
-	changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds}
+	changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds, WaitHint: 1000}
 	logger.Info("服务已进入运行状态")
 
-loop:
+	// 处理服务控制请求
 	for {
 		select {
-		case <-ticker.C:
-			if err := reportIP(); err != nil {
-				logger.Error("定时上报失败：%v", err)
-			} else {
-				logger.Info("定时上报成功")
-			}
-		case req := <-r:
-			switch req.Cmd {
+		case c := <-r:
+			switch c.Cmd {
 			case svc.Interrogate:
-				changes <- req.CurrentStatus
+				changes <- c.CurrentStatus
 			case svc.Stop, svc.Shutdown:
-				logger.Info("收到停止指令，服务即将退出")
-				changes <- svc.Status{State: svc.StopPending, WaitHint: 1000}
-				break loop
+				logger.Info("收到服务停止/关机请求，开始退出")
+				changes <- svc.Status{State: svc.StopPending, WaitHint: 2000}
+				return false, 0
 			case svc.Pause:
-				logger.Info("服务暂停")
-				ticker.Stop()
-				changes <- svc.Status{State: svc.Paused, Accepts: acceptedCmds}
+				logger.Info("收到服务暂停请求")
+				changes <- svc.Status{State: svc.Paused, Accepts: acceptedCmds, WaitHint: 1000}
 			case svc.Continue:
-				logger.Info("服务恢复运行")
-				ticker.Reset(reportInterval)
-				changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds}
+				logger.Info("收到服务继续请求")
+				changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds, WaitHint: 1000}
 			default:
-				logger.Warn("收到未知指令：%v", req.Cmd)
+				logger.Warn("收到未知服务控制命令：%v", c.Cmd)
+				changes <- c.CurrentStatus
 			}
 		}
 	}
-
-	changes <- svc.Status{State: svc.Stopped, Accepts: acceptedCmds}
-	logger.Info("服务已停止")
-	return false, 0
 }
 
 // reportIP 上报IP信息
 func reportIP() error {
-	logger.Debug("开始上报IP信息")
-
-	localNetworks := getLocalNetworks()
+	networks := getLocalNetworks()
 	payload := ReportPayload{
-		UUID:       machineFixedUUID,
-		Username:   systemUsername,
-		Networks:   localNetworks,
-		TimeStamp:  time.Now().Format(time.RFC3339),
+		UUID:      machineFixedUUID,
+		Username:  systemUsername,
+		Networks:  networks,
+		TimeStamp: time.Now().Format(time.RFC3339),
 	}
 
-	payloadBytes, err := json.Marshal(payload)
+	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("序列化数据失败：%v", err)
+		return fmt.Errorf("序列化上报数据失败：%v", err)
 	}
 
-	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(payloadBytes))
+	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("创建请求失败：%v", err)
 	}
@@ -855,44 +870,44 @@ func reportIP() error {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("读取响应失败：%v", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("服务器返回错误：%d，内容：%s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("上报失败，状态码：%d，响应：%s", resp.StatusCode, string(body))
 	}
 
-	logger.Debug("上报成功，响应：%s", string(respBody))
+	logger.Debug("上报成功，响应：%s", string(body))
 	return nil
 }
 
 // openBrowser 打开浏览器
 func openBrowser(url string) error {
-	cmd := exec.Command("cmd", "/c", "start", "", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: CREATE_NO_WINDOW,
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return fmt.Errorf("不支持的操作系统：%s", runtime.GOOS)
 	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	return nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	return cmd.Start()
 }
 
-// ======== 主函数 ========
+// main 主函数
 func main() {
-	hideConsoleWindow()
-
-	// 解析命令行参数
+	// 处理命令行参数
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":
+			// 安装时显示控制台，方便查看错误
+			showConsoleWindow()
 			if err := Install(); err != nil {
 				logger.Error("安装失败：%v", err)
 				fmt.Printf("安装失败：%v\n", err)
-				// 暂停让用户看到错误信息
+				// 暂停等待用户查看
 				fmt.Println("按任意键退出...")
 				var input string
 				fmt.Scanln(&input)
@@ -900,6 +915,7 @@ func main() {
 			}
 			os.Exit(0)
 		case "uninstall":
+			showConsoleWindow()
 			if err := Uninstall(); err != nil {
 				logger.Error("卸载失败：%v", err)
 				fmt.Printf("卸载失败：%v\n", err)
@@ -923,29 +939,27 @@ func main() {
 				os.Exit(1)
 			}
 			os.Exit(0)
-		default:
-			logger.Warn("未知参数：%s", os.Args[1])
-			fmt.Printf("未知参数：%s\n", os.Args[1])
-			os.Exit(1)
 		}
 	}
 
-	// 无参数：判断是否为服务模式运行
+	// 作为服务运行或后台运行
+	hideConsoleWindow()
 	isService, err := svc.IsWindowsService()
 	if err != nil {
-		logger.Error("检测服务模式失败：%v", err)
-		fmt.Printf("检测服务模式失败：%v\n", err)
-		os.Exit(1)
+		logger.Error("检测是否为服务运行失败：%v", err)
+		// 非服务模式，直接后台运行
+		runBackground()
+		return
 	}
 
 	if isService {
-		logger.Info("以服务模式运行")
+		// 以服务模式运行
 		if err := svc.Run(serviceName, &ipReportService{}); err != nil {
 			logger.Error("服务运行失败：%v", err)
 			os.Exit(1)
 		}
 	} else {
-		// 非服务模式：后台运行
+		// 普通后台运行
 		runBackground()
 	}
 }
