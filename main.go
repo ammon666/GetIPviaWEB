@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -55,6 +57,21 @@ type Logger struct {
 	serviceName   string
 }
 
+// 网卡信息结构体（匹配服务端networks字段要求）
+type NetworkInfo struct {
+	InterfaceName string `json:"interface_name"` // 网卡名称
+	IpAddress     string `json:"ip_address"`     // 对应IP地址
+}
+
+// 上报数据结构体（严格匹配服务端必填字段）
+type ReportPayload struct {
+	UUID     string        `json:"uuid"`      // 必填
+	Username string        `json:"username"`  // 必填
+	Networks []NetworkInfo `json:"networks"`  // 必填（数组）
+	IP       string        `json:"ip,omitempty"` // 可选（公网IP）
+	TimeStamp string       `json:"timestamp,omitempty"`
+}
+
 // 全局配置
 var (
 	// 路径配置（使用ProgramData，确保Local System账户可读写）
@@ -76,7 +93,8 @@ var (
 
 	// 全局变量
 	logger                 *Logger // 增强日志器
-	machineFixedUUID       string
+	machineFixedUUID       string  // 设备唯一UUID（必填）
+	systemUsername         string  // 系统用户名（必填）
 	isFirstRun             bool
 	reportInterval         time.Duration
 )
@@ -113,11 +131,19 @@ func init() {
 	}
 	logger.Info("APIKey注入成功（长度：%d），避免硬编码保障安全", len(APIKey))
 
-	// 4. 初始化上报间隔
+	// 4. 初始化系统用户名（必填字段）
+	systemUsername, err = getSystemUsername()
+	if err != nil {
+		logger.Error("获取系统用户名失败：%v，使用默认用户名", err)
+		systemUsername = "default-user" // 兜底默认值
+	}
+	logger.Info("获取系统用户名：%s", systemUsername)
+
+	// 5. 初始化上报间隔
 	reportInterval = DefaultInterval
 	logger.Debug("上报间隔初始化：%v", reportInterval)
 
-	// 5. 检测是否首次运行
+	// 6. 检测是否首次运行
 	if _, err := os.Stat(firstRunFlag); os.IsNotExist(err) {
 		isFirstRun = true
 		logger.Info("检测到首次运行，将弹出浏览器")
@@ -126,17 +152,100 @@ func init() {
 		logger.Info("非首次运行，跳过浏览器弹窗")
 	}
 
-	// 6. 生成机器唯一标识
+	// 7. 生成设备唯一UUID（必填字段）
 	machineFixedUUID = getMachineUUID()
-	logger.Debug("生成机器唯一标识：%s", machineFixedUUID)
+	logger.Debug("生成设备唯一UUID：%s", machineFixedUUID)
 }
 
-// getMachineUUID 生成机器唯一标识
+// getMachineUUID 生成设备唯一UUID（确保唯一性）
 func getMachineUUID() string {
-	// 可替换为读取硬件信息（如主板序列号），此处保持简化
-	uuid := fmt.Sprintf("machine-%s", time.Now().UnixNano())
-	logger.Debug("生成UUID：%s", uuid)
-	return uuid
+	// 优先获取主机名+MAC地址生成唯一UUID，兜底用时间戳
+	hostname, _ := os.Hostname()
+	macAddr, _ := getMacAddress()
+	if hostname != "" && macAddr != "" {
+		return fmt.Sprintf("%s-%s", hostname, macAddr)
+	}
+	return fmt.Sprintf("machine-%d", time.Now().UnixNano())
+}
+
+// getSystemUsername 获取系统当前用户名（必填字段）
+func getSystemUsername() (string, error) {
+	// 方法1：通过os/user包获取
+	currentUser, err := user.Current()
+	if err == nil {
+		return currentUser.Username, nil
+	}
+	// 方法2：兜底获取环境变量
+	username := os.Getenv("USERNAME")
+	if username != "" {
+		return username, nil
+	}
+	return "", fmt.Errorf("无法获取系统用户名")
+}
+
+// getMacAddress 获取本机MAC地址（用于生成唯一UUID）
+func getMacAddress() (string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp != 0 && !iface.Flags&net.FlagLoopback != 0 {
+			mac := iface.HardwareAddr.String()
+			if mac != "" {
+				return mac, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("未找到有效MAC地址")
+}
+
+// getLocalNetworks 获取本机所有网卡和对应IP（必填的networks字段）
+func getLocalNetworks() []NetworkInfo {
+	var networks []NetworkInfo
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		logger.Error("获取网卡信息失败：%v", err)
+		return networks
+	}
+
+	for _, iface := range ifaces {
+		// 跳过禁用/回环网卡
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		// 获取网卡所有IP
+		addrs, err := iface.Addrs()
+		if err != nil {
+			logger.Warn("获取网卡[%s]IP失败：%v", iface.Name, err)
+			continue
+		}
+		// 遍历IP并添加到networks
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP.IsLoopback() {
+				continue
+			}
+			// 只保留IPv4地址（按需可添加IPv6）
+			if ip4 := ipNet.IP.To4(); ip4 != nil {
+				networks = append(networks, NetworkInfo{
+					InterfaceName: iface.Name,
+					IpAddress:     ip4.String(),
+				})
+				logger.Debug("网卡[%s] IP：%s", iface.Name, ip4.String())
+			}
+		}
+	}
+
+	// 兜底：如果没有获取到网卡信息，添加默认值
+	if len(networks) == 0 {
+		networks = append(networks, NetworkInfo{
+			InterfaceName: "default",
+			IpAddress:     "127.0.0.1",
+		})
+		logger.Warn("未获取到有效网卡信息，使用默认值")
+	}
+	return networks
 }
 
 // ======== 增强日志核心方法 ========
@@ -443,24 +552,32 @@ loop:
 	return false, 0
 }
 
-// reportIP 上报IP到服务器（核心修复：添加X-API-Key请求头）
+// reportIP 上报IP到服务器（核心修复：匹配服务端所有必填字段）
 func reportIP() error {
 	logger.Debug("开始执行IP上报逻辑")
 
-	// 1. 获取公网IP
+	// 1. 获取公网IP（可选字段）
 	logger.Debug("尝试获取公网IP")
-	ip, err := getPublicIP()
+	publicIP, err := getPublicIP()
 	if err != nil {
-		return fmt.Errorf("获取公网IP失败：%v", err)
+		logger.Warn("获取公网IP失败：%v，继续上报内网信息", err)
+		publicIP = ""
+	} else {
+		logger.Debug("获取到公网IP：%s", publicIP)
 	}
-	logger.Debug("获取到公网IP：%s", ip)
 
-	// 2. 构造上报数据（匹配服务端要求）
-	payload := map[string]string{
-		"api_key":   APIKey,       // 兼容字段（保留）
-		"uuid":      machineFixedUUID,
-		"ip":        ip,
-		"timestamp": time.Now().Format(time.RFC3339),
+	// 2. 获取本机网卡信息（必填的networks字段）
+	logger.Debug("获取本机网卡信息（必填字段）")
+	localNetworks := getLocalNetworks()
+	logger.Debug("获取到网卡信息：%d个", len(localNetworks))
+
+	// 3. 构造上报数据（严格匹配服务端必填字段）
+	payload := ReportPayload{
+		UUID:     machineFixedUUID,       // 必填
+		Username: systemUsername,         // 必填
+		Networks: localNetworks,          // 必填（数组）
+		IP:       publicIP,               // 可选（公网IP）
+		TimeStamp: time.Now().Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -468,17 +585,17 @@ func reportIP() error {
 	}
 	logger.Debug("上报数据序列化完成：%s", string(payloadBytes))
 
-	// 3. 创建POST请求（核心修复：添加X-API-Key请求头）
+	// 4. 创建POST请求（保留X-API-Key请求头）
 	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("创建HTTP请求失败：%v", err)
 	}
-	// 必须设置的请求头（解决403核心）
+	// 必须设置的请求头
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-API-Key", APIKey) // 携带编译注入的API Key到请求头
+	req.Header.Set("X-API-Key", APIKey) // 编译注入的API Key
 	logger.Debug("已添加X-API-Key请求头（长度：%d）", len(APIKey))
 
-	// 4. 发送请求
+	// 5. 发送请求
 	client := &http.Client{Timeout: Timeout}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -487,19 +604,19 @@ func reportIP() error {
 	defer resp.Body.Close()
 	logger.Debug("收到HTTP响应，状态码：%d", resp.StatusCode)
 
-	// 5. 解析响应
+	// 6. 解析响应
 	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("读取响应体失败：%v", err)
 	}
 	logger.Debug("响应体内容：%s", string(respBody))
 
-	// 6. 校验响应状态
+	// 7. 校验响应状态
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("服务器返回错误：%d，内容：%s", resp.StatusCode, string(respBody))
 	}
 
-	// 7. 校验业务响应
+	// 8. 校验业务响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		logger.Warn("解析响应JSON失败（非致命）：%v", err)
@@ -510,11 +627,11 @@ func reportIP() error {
 		return fmt.Errorf("上报业务失败：%s", errorMsg)
 	}
 
-	logger.Debug("IP上报成功完成")
+	logger.Debug("IP上报成功完成，服务端返回：%s", string(respBody))
 	return nil
 }
 
-// getPublicIP 获取公网IP
+// getPublicIP 获取公网IP（可选字段）
 func getPublicIP() (string, error) {
 	logger.Debug("调用ipify.org获取公网IP")
 	client := &http.Client{Timeout: Timeout}
