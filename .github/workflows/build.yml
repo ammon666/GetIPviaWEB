@@ -1,77 +1,44 @@
-name: Build and Release
+# 工作流名称
+name: Build Windows IP Monitor Executable
 
+# 触发条件：推送到main分支、创建PR到main分支时执行
 on:
   push:
-    branches: [ main, master ]
-    tags:
-      - 'v*'
+    branches: [ main ]
   pull_request:
-    branches: [ main, master ]
-  workflow_dispatch:
+    branches: [ main ]
 
+# 定义任务
 jobs:
-  build:
+  build-windows:
+    # 指定运行环境为Windows（walk库仅支持Windows编译）
     runs-on: windows-latest
-    
+    # 任务步骤
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.21'
-        
-    - name: Get dependencies
-      run: |
-        go mod download
-        go mod verify
-        
-    - name: Build
-      run: |
-        go build -ldflags="-s -w -H windowsgui" -o ip-monitor.exe
-      
-    - name: Create build info
-      run: |
-        echo "Build Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" > build-info.txt
-        echo "Git Commit: $env:GITHUB_SHA" >> build-info.txt
-        echo "Go Version: $(go version)" >> build-info.txt
-        
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ip-monitor-windows
-        path: |
-          ip-monitor.exe
-          build-info.txt
-          
-    - name: Create Release
-      if: startsWith(github.ref, 'refs/tags/v')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          ip-monitor.exe
-          build-info.txt
-        body: |
-          ## IP监控程序发布
-          
-          ### 下载说明
-          下载 `ip-monitor.exe` 到任意目录运行即可。
-          
-          ### 配置说明
-          首次运行前，请在代码中修改以下配置：
-          - `APIEndpoint`: 你的Cloudflare Workers地址
-          - `APIKey`: 你的API密钥
-          
-          ### 功能特性
-          - ✅ 自动获取网络信息（IP、网关、子网掩码）
-          - ✅ 获取登录用户名和主机名
-          - ✅ 持久化UUID（不随重启变化）
-          - ✅ 定时上报（每小时）
-          - ✅ IP变化检测（5分钟检查一次）
-          - ✅ 开机自动上报
-          - ✅ 开发模式日志窗口
-          
-          构建信息详见 `build-info.txt`
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # 步骤1：拉取代码到CI服务器
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # 步骤2：配置Go环境
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # 指定Go版本（需与本地开发版本一致，建议>=1.18）
+          go-version: '1.21'
+          # 缓存Go模块，加速后续构建
+          cache: true
+
+      # 步骤3：整理依赖（核心：补全go.sum缺失的条目）
+      - name: Install and tidy dependencies
+        run: go mod tidy
+
+      # 步骤4：编译可执行文件（带Windows GUI参数）
+      - name: Build Windows executable
+        run: go build -ldflags="-s -w -H windowsgui" -o ip-monitor.exe
+
+      # 可选步骤：上传编译产物（方便下载）
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ip-monitor-windows
+          path: ip-monitor.exe

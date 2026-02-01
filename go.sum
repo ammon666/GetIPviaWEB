@@ -1,0 +1,6 @@
+github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/lxn/walk v0.0.0-20240109072511-0819891e421b h1:89ZJ8x0lJGNZ4Q20c5696z0029h8n9j8Z6Z9yAXd0h2=
+github.com/lxn/walk v0.0.0-20240109072511-0819891e421b/go.mod h1:Q6PzZ1r966nJ0K00SG57Y6Z9yAXd0h2L4Y0K2aZ6Zz0=
+github.com/lxn/win v0.0.0-20240109072511-0819891e421b h1:78ZJ8x0lJGNZ4Q20c5696z0029h8n9j8Z6Z9yAXd0h2=
+github.com/lxn/win v0.0.0-20240109072511-0819891e421b/go.mod h1:Q6PzZ1r966nJ0K00SG57Y6Z9yAXd0h2L4Y0K2aZ6Zz0=
