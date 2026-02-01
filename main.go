@@ -200,28 +200,53 @@ func showConsoleWindow() {
 	}
 }
 
-// ========== 修复：打开浏览器（改用更稳定的rundll32方式） ==========
-// openBrowser 打开指定URL的浏览器（Windows系统，修复兼容性问题）
+// ========== 修复：打开浏览器（使用最稳定的cmd start方式） ==========
+// openBrowser 打开指定URL的浏览器（Windows系统，多重方案确保兼容性）
 func openBrowser(url string) error {
 	logger.Debug("尝试打开浏览器访问：%s", url)
-	// 改用rundll32 url.dll,FileProtocolHandler 方式，兼容所有Windows版本
-	cmd := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	
+	// 方案1：使用 cmd /c start（最稳定，Windows通用方案）
+	// 注意：start 后面必须有一个空字符串作为窗口标题参数
+	cmd := exec.Command("cmd", "/c", "start", "", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true, // 隐藏执行窗口
+		HideWindow:    true,
 		CreationFlags: CREATE_NO_WINDOW,
 	}
-	// 执行命令并等待（确保浏览器启动）
-	if err := cmd.Run(); err != nil {
-		// 降级方案：尝试start命令
-		logger.Warn("rundll32打开浏览器失败，尝试降级方案：%v", err)
-		cmd = exec.Command("cmd", "/c", "start", "", url)
-		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("打开浏览器失败（所有方案均失败）：%v", err)
+	
+	if err := cmd.Start(); err != nil {
+		// 方案2：降级使用 rundll32
+		logger.Warn("cmd start 打开浏览器失败，尝试 rundll32 方案：%v", err)
+		cmd2 := exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+		cmd2.SysProcAttr = &syscall.SysProcAttr{
+			HideWindow:    true,
+			CreationFlags: CREATE_NO_WINDOW,
 		}
-		cmd.Process.Release()
+		
+		if err2 := cmd2.Start(); err2 != nil {
+			// 方案3：最后尝试直接使用 ShellExecute（通过 explorer）
+			logger.Warn("rundll32 也失败，尝试 explorer 方案：%v", err2)
+			cmd3 := exec.Command("explorer", url)
+			cmd3.SysProcAttr = &syscall.SysProcAttr{
+				HideWindow:    true,
+				CreationFlags: CREATE_NO_WINDOW,
+			}
+			
+			if err3 := cmd3.Start(); err3 != nil {
+				logger.Error("所有打开浏览器方案均失败：cmd=%v, rundll32=%v, explorer=%v", err, err2, err3)
+				return fmt.Errorf("打开浏览器失败（所有方案均失败）：%v", err3)
+			}
+			cmd3.Process.Release()
+			logger.Info("浏览器已打开（使用explorer方案），访问地址：%s", url)
+			return nil
+		}
+		cmd2.Process.Release()
+		logger.Info("浏览器已打开（使用rundll32方案），访问地址：%s", url)
+		return nil
 	}
-	logger.Info("浏览器已打开，访问地址：%s", url)
+	
+	// 释放进程句柄，避免资源泄漏
+	cmd.Process.Release()
+	logger.Info("浏览器已打开（使用cmd start方案），访问地址：%s", url)
 	return nil
 }
 
