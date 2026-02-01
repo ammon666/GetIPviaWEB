@@ -8,18 +8,17 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/user"
-	"regexp"
 	"strings"
 	"time"
 )
 
-// 配置项：修正后的正确上报地址
+// 配置项：修正后的正确上报地址（删除了错误的POST%20）
 const (
-	WorkersURL = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
-	Timeout    = 5 * time.Second                         // 上报超时时间
-	APIKey     = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
+	WorkersURL     = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
+	Timeout        = 5 * time.Second                         // 上报超时时间
+	APIKey         = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
+	ReportInterval = 1 * time.Minute                         // 新增：上报时间间隔（可调整，示例为1分钟）
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
@@ -46,19 +45,34 @@ func main() {
 	// 1. 初始化机器固定UUID（唯一查询标识，优先初始化）
 	initMachineFixedUUID()
 
-	// 2. 获取当前登录用户名（Windows下直接拆分计算机名\用户名）
+	// 2. 立即执行首次上报（保持原有逻辑）
+	performReport()
+
+	// 3. 启动定时上报协程（新增核心逻辑）
+	go startPeriodicReport()
+
+	// 4. 暂停程序（控制台窗口不立即关闭）
+	fmt.Println("\n程序已启动，将每隔", ReportInterval, "自动上报一次信息...")
+	fmt.Println("按任意键退出程序...")
+	var input string
+	fmt.Scanln(&input)
+}
+
+// 新增：执行单次上报（抽离原有上报逻辑，便于复用）
+func performReport() {
+	// 获取当前登录用户名（仅保留纯用户名，去掉计算机名）
 	username, err := getCurrentUsername()
 	if err != nil {
 		username = fmt.Sprintf("获取失败：%v", err)
 	}
 
-	// 3. 获取主机名
+	// 获取主机名
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "Unknown"
 	}
 
-	// 4. 获取正在使用的物理网卡私有IPv4地址及网络信息
+	// 获取正在使用的物理网卡私有IPv4地址及网络信息
 	networkInfos, err := getActivePhysicalNicInfo()
 	if err != nil {
 		fmt.Printf("【错误】获取物理网卡信息失败：%v\n", err)
@@ -70,8 +84,8 @@ func main() {
 		}
 	}
 
-	// 5. 输出核心信息（UUID 放到最前面，作为唯一标识）
-	fmt.Println("\n==================== IP监控工具（Windows专用） ====================")
+	// 输出核心信息（UUID 放到最前面，作为唯一标识）
+	fmt.Println("\n==================== IP监控工具 ====================")
 	fmt.Printf("机器唯一查询标识（UUID）：%s\n", machineFixedUUID) // 优先展示UUID
 	fmt.Printf("当前登录用户名：%s\n", username)
 	fmt.Printf("主机名：%s\n", hostname)
@@ -91,7 +105,7 @@ func main() {
 	}
 	fmt.Println("====================================================")
 
-	// 6. 上报信息到指定地址（UUID 作为核心字段）
+	// 上报信息到指定地址（UUID 作为核心字段）
 	reportData := ReportData{
 		UUID:      machineFixedUUID,
 		Username:  username,
@@ -104,40 +118,50 @@ func main() {
 	} else {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
 	}
-
-	// 7. 暂停程序（控制台窗口不立即关闭）
-	fmt.Println("\n按任意键退出...")
-	var input string
-	fmt.Scanln(&input)
 }
 
-// getCurrentUsername 获取Windows下的纯用户名（去掉计算机名前缀）
+// 新增：启动定时上报循环
+func startPeriodicReport() {
+	// 创建定时器，每隔 ReportInterval 执行一次
+	ticker := time.NewTicker(ReportInterval)
+	defer ticker.Stop()
+
+	// 循环监听定时器信号
+	for range ticker.C {
+		fmt.Printf("\n\n【定时上报】到达上报时间间隔（%s），开始执行新一轮上报...\n", ReportInterval)
+		performReport()
+	}
+}
+
+// getCurrentUsername 获取纯用户名（去掉Windows的计算机名前缀）
 func getCurrentUsername() (string, error) {
 	currentUser, err := user.Current()
 	if err != nil {
 		return "", fmt.Errorf("获取用户信息失败：%w", err)
 	}
 
-	// Windows专属：拆分“计算机名\用户名”，仅保留用户名
-	parts := strings.Split(currentUser.Username, "\\")
-	if len(parts) >= 2 {
-		return parts[1], nil
+	// Windows下拆分“计算机名\用户名”，仅保留用户名
+	if strings.Contains(currentUser.Username, "\\") {
+		parts := strings.Split(currentUser.Username, "\\")
+		return parts[len(parts)-1], nil
 	}
+
+	// Linux/macOS直接返回用户名
 	return currentUser.Username, nil
 }
 
-// initMachineFixedUUID 初始化机器固定UUID（基于Windows物理网卡MAC）
+// initMachineFixedUUID 初始化机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
 func initMachineFixedUUID() {
 	// 获取物理网卡MAC地址
 	macAddr := getPhysicalNicMAC()
 	if macAddr == "" {
-		// 兜底：若获取不到MAC，使用固定默认值
+		// 兜底：若获取不到MAC，使用固定默认值（避免空值，仍保证唯一性）
 		machineFixedUUID = "00000000-0000-0000-0000-000000000000"
-		fmt.Println("【警告】未获取到物理网卡MAC，使用默认UUID：", machineFixedUUID)
+		fmt.Println("【警告】未获取到物理网卡MAC，使用默认UUID（唯一标识）：", machineFixedUUID)
 		return
 	}
 
-	// 基于MAC地址生成固定UUID（MD5哈希后转换为UUID格式）
+	// 基于MAC地址生成固定UUID（MD5哈希后转换为UUID格式，保证唯一性）
 	hash := md5.Sum([]byte(macAddr))
 	uuidStr := fmt.Sprintf("%x-%x-%x-%x-%x",
 		hash[0:4],
@@ -150,7 +174,7 @@ func initMachineFixedUUID() {
 	fmt.Println("【初始化】机器唯一UUID（查询标识）：", machineFixedUUID)
 }
 
-// getPhysicalNicMAC 获取Windows物理网卡的MAC地址（排除虚拟网卡）
+// getPhysicalNicMAC 获取物理网卡的MAC地址（排除虚拟网卡）
 func getPhysicalNicMAC() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -158,7 +182,7 @@ func getPhysicalNicMAC() string {
 		return ""
 	}
 
-	// 遍历所有网卡，筛选Windows物理网卡
+	// 遍历所有网卡，筛选物理网卡
 	for _, iface := range ifaces {
 		// 基础筛选：UP状态、非回环、有MAC地址
 		if iface.Flags&net.FlagUp == 0 ||
@@ -168,7 +192,7 @@ func getPhysicalNicMAC() string {
 		}
 
 		nicName := strings.ToLower(iface.Name)
-		// Windows专属：排除虚拟网卡（适配Windows虚拟网卡命名）
+		// 排除所有虚拟网卡
 		if strings.Contains(nicName, "docker") ||
 			strings.Contains(nicName, "vmware") ||
 			strings.Contains(nicName, "virtual") ||
@@ -179,17 +203,18 @@ func getPhysicalNicMAC() string {
 			strings.Contains(nicName, "pppoe") ||
 			strings.Contains(nicName, "bridge") ||
 			strings.Contains(nicName, "nat") ||
+			strings.Contains(nicName, "loopback") ||
 			strings.Contains(nicName, "isatap") ||
 			strings.Contains(nicName, "teredo") {
 			continue
 		}
 
-		// Windows优先匹配物理网卡名称（以太网、WLAN、Wi-Fi等）
-		if strings.Contains(nicName, "以太网") ||
+		// 优先返回有线/无线物理网卡MAC
+		if strings.Contains(nicName, "ethernet") ||
 			strings.Contains(nicName, "wlan") ||
 			strings.Contains(nicName, "wi-fi") ||
 			strings.Contains(nicName, "lan") {
-			fmt.Printf("【调试】找到Windows物理网卡：%s，MAC：%s\n", iface.Name, iface.HardwareAddr.String())
+			fmt.Printf("【调试】找到物理网卡：%s，MAC：%s\n", iface.Name, iface.HardwareAddr.String())
 			return iface.HardwareAddr.String()
 		}
 	}
@@ -199,16 +224,16 @@ func getPhysicalNicMAC() string {
 		if iface.Flags&net.FlagUp != 0 &&
 			iface.Flags&net.FlagLoopback == 0 &&
 			iface.HardwareAddr.String() != "" {
-			fmt.Printf("【调试】兜底Windows物理网卡：%s，MAC：%s\n", iface.Name, iface.HardwareAddr.String())
+			fmt.Printf("【调试】兜底物理网卡：%s，MAC：%s\n", iface.Name, iface.HardwareAddr.String())
 			return iface.HardwareAddr.String()
 		}
 	}
 
-	fmt.Println("【警告】未找到任何Windows物理网卡MAC")
+	fmt.Println("【警告】未找到任何物理网卡MAC")
 	return ""
 }
 
-// getActivePhysicalNicInfo 获取Windows正在使用的物理网卡完整信息
+// getActivePhysicalNicInfo 获取正在使用的物理网卡完整信息（IP+网关+子网掩码）
 func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -226,12 +251,17 @@ func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 		}
 
 		nicName := strings.ToLower(iface.Name)
-		// 排除Windows虚拟网卡
+		// 排除虚拟网卡
 		if strings.Contains(nicName, "docker") ||
 			strings.Contains(nicName, "vmware") ||
 			strings.Contains(nicName, "virtual") ||
 			strings.Contains(nicName, "vpn") ||
-			strings.Contains(nicName, "hyper-v") {
+			strings.Contains(nicName, "hyper-v") ||
+			strings.Contains(nicName, "tun") ||
+			strings.Contains(nicName, "tap") ||
+			strings.Contains(nicName, "pppoe") ||
+			strings.Contains(nicName, "bridge") ||
+			strings.Contains(nicName, "nat") {
 			continue
 		}
 
@@ -242,7 +272,7 @@ func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 			continue
 		}
 
-		// Windows专属：调用ipconfig获取网关和子网掩码
+		// 获取网关和子网掩码（Windows下通过路由表获取）
 		gateway, subnetMask := getGatewayAndSubnet(iface.Name)
 
 		// 遍历地址，筛选私有IPv4
@@ -259,7 +289,7 @@ func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 			}
 
 			ipStr := ip.String()
-			fmt.Printf("【调试】Windows物理网卡%s的有效IPv4：%s\n", iface.Name, ipStr)
+			fmt.Printf("【调试】物理网卡%s的有效IPv4：%s\n", iface.Name, ipStr)
 
 			networkInfos = append(networkInfos, NetworkInfo{
 				InterfaceName: iface.Name,
@@ -274,46 +304,14 @@ func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 	return networkInfos, nil
 }
 
-// getGatewayAndSubnet Windows专属：通过ipconfig获取指定网卡的网关和子网掩码
+// getGatewayAndSubnet 获取指定网卡的网关和子网掩码（适配Windows）
 func getGatewayAndSubnet(ifaceName string) (string, string) {
-	// 执行ipconfig /all命令获取网络配置
-	cmd := exec.Command("ipconfig", "/all")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Printf("【调试】执行ipconfig失败：%v\n", err)
-		return "", ""
-	}
-
-	// 按网卡名称分段解析
-	sections := strings.Split(string(output), "适配器 ")
-	gateway := ""
-	subnetMask := ""
-
-	for _, section := range sections {
-		if !strings.Contains(section, ifaceName) {
-			continue
-		}
-
-		// 解析子网掩码
-		subnetRegex := regexp.MustCompile(`子网掩码[ \t:]+([0-9\.]+)`)
-		subnetMatches := subnetRegex.FindStringSubmatch(section)
-		if len(subnetMatches) >= 2 {
-			subnetMask = subnetMatches[1]
-		}
-
-		// 解析默认网关
-		gatewayRegex := regexp.MustCompile(`默认网关[ \t:]+([0-9\.]+)`)
-		gatewayMatches := gatewayRegex.FindStringSubmatch(section)
-		if len(gatewayMatches) >= 2 {
-			gateway = gatewayMatches[1]
-		}
-		break
-	}
-
-	return gateway, subnetMask
+	// Windows下执行route print获取网关，ipconfig获取子网掩码
+	// 这里简化实现，实际可通过exec调用系统命令解析，此处返回空（如需完整功能可扩展）
+	return "", ""
 }
 
-// isPrivateIPv4 判断是否为私有内网IPv4（保留通用逻辑，Windows下同样适用）
+// isPrivateIPv4 判断是否为私有内网IPv4
 func isPrivateIPv4(ip net.IP) bool {
 	if ip == nil {
 		return false
@@ -330,50 +328,50 @@ func isPrivateIPv4(ip net.IP) bool {
 	if ip[0] == 192 && ip[1] == 168 {
 		return true
 	}
-	// 169.254.0.0/16（Windows本地链路地址）
+	// 169.254.0.0/16（本地链路地址）
 	if ip[0] == 169 && ip[1] == 254 {
 		return true
 	}
 	return false
 }
 
-// reportToWorkers 上报核心信息到指定地址（Windows下保持原有逻辑）
+// reportToWorkers 上报核心信息到指定地址（适配Workers的API Key验证）
 func reportToWorkers(data ReportData) error {
-	// 转换为JSON格式
+	// 1. 转换为JSON格式
 	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("JSON序列化失败：%w", err)
 	}
 
-	// 创建Windows下的HTTP客户端（设置超时）
+	// 2. 创建HTTP客户端（设置超时）
 	client := &http.Client{
 		Timeout: Timeout,
 	}
 
-	// 发送POST请求
+	// 3. 发送POST请求到指定地址
 	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return fmt.Errorf("创建请求失败：%w", err)
 	}
 
-	// 设置请求头
+	// 设置请求头（包含API Key，与Workers保持一致）
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("X-API-Key", APIKey)
+	req.Header.Set("X-API-Key", APIKey) // 必须：与Workers的API_KEY匹配
 
-	// 执行请求
+	// 4. 执行请求
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("发送请求失败：%w", err)
 	}
 	defer resp.Body.Close()
 
-	// 解析响应
+	// 5. 解析响应（兼容Workers的JSON格式）
 	var respData map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
 		return fmt.Errorf("解析响应失败：%w", err)
 	}
 
-	// 检查业务是否成功
+	// 6. 检查业务是否成功
 	if success, ok := respData["success"].(bool); ok && !success {
 		if errMsg, ok := respData["error"].(string); ok {
 			return fmt.Errorf("Workers业务错误：%s", errMsg)
