@@ -1,32 +1,38 @@
-name: Build Windows Service
-on: [push]
+name: Build GetIPviaWEB Service
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: # 支持手动触发
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Go
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
-          go-version: '1.20'
-          
-      - name: Clean Go cache and old sum
+          go-version: '1.22' # 适配你的Go版本，建议1.19+
+          cache: true # 启用Go模块缓存，加速编译
+
+      - name: 安装依赖
         run: |
-          go clean -modcache
-          del go.sum
-          
-      - name: Update dependencies
+          go mod init GetIPviaWEB # 初始化mod（如果没有go.mod）
+          go get golang.org/x/sys/windows/svc
+
+      - name: 编译可执行文件（注入APIKey）
         run: |
-          go mod init getipviaweb
-          go mod tidy
-          
-      - name: Build Windows service
-        run: go build -ldflags="-H windowsgui -s -w" -o GetIPviaWEB.exe main.go
-          
-      - name: Upload artifact
+          # 核心：通过-ldflags将GitHub Secrets中的APIKey注入到main.APIKey变量
+          go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
+          # 验证编译结果
+          dir GetIPviaWEB.exe
+          echo "编译完成，APIKey已嵌入二进制文件"
+
+      - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: GetIPviaWEB
+          name: GetIPviaWEB-Windows-Service
           path: GetIPviaWEB.exe
+          retention-days: 7 # 产物保留7天，可根据需要调整

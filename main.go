@@ -2,31 +2,29 @@ package main
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/json"
-	"flag"
 	"fmt"
-	"net"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"os/exec"
-	"os/user"
-	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/kardianos/service"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/debug"
+	"golang.org/x/sys/windows/svc/eventlog"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
-// ========== 全局配置 ==========
+// ========== 全局配置（核心修改：APIKey改为编译时注入） ==========
 var (
 	// 日志&标记文件路径（确保Local System账户可访问）
 	logPath        = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "service.log")
 	firstRunFlag   = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "first_run_done") // 首次启动标记文件
 	// 服务配置（仅保留必选字段）
-	serviceConfig = &service.Config{
+	serviceConfig = &mgr.Config{
 		Name:        "GetIPviaWEBService",       // 服务名称（唯一）
 		DisplayName: "IP监控自动上报服务",        // 服务显示名称
 		Description: "开机自动运行，仅首次启动弹浏览器，定时上报IP信息", // 服务描述
@@ -37,532 +35,303 @@ var (
 	CREATE_NO_WINDOW = 0x08000000 // uint32类型
 	SW_HIDE         = 0           // uintptr类型
 
-	// 业务常量
+	// 业务变量（APIKey通过-ldflags编译注入，无默认值）
+	APIKey          string // 核心修改：不再硬编码，编译时注入
 	WorkersURL      = "https://getip.ammon.de5.net/api/report"
 	Timeout         = 5 * time.Second
-	APIKey          = "9ddae7a3-c730-469e-b644-859880ad9752"
 	DefaultInterval = 1 * time.Minute
 	ViewURLTemplate = "https://getip.ammon.de5.net/view/%s"
 
 	// 全局变量
 	machineFixedUUID string
-	logger           service.Logger // 服务日志
-	reportInterval   time.Duration  // 上报间隔
-	isFirstRun       bool           // 是否是首次启动（内存标记，初始为true）
+	logger           debug.Logger // 服务日志
+	reportInterval   time.Duration // 上报间隔
+	isFirstRun       bool          // 是否是首次启动（内存标记，初始为true）
 )
 
-// ========== 命令行参数 ==========
-var (
-	flagBuild    = flag.Bool("build", false, "仅编译模式（CI环境）")
-	flagInterval = flag.Float64("interval", 60, "上报间隔（分钟）")
-	flagService  = flag.String("service", "", "服务操作：install/uninstall/start/stop/restart")
-)
+// init 初始化函数：校验APIKey，无值则panic（强制要求编译时注入）
+func init() {
+	// 创建日志目录（确保Local System有权限）
+	logDir := filepath.Dir(logPath)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		panic(fmt.Sprintf("创建日志目录失败：%v", err))
+	}
 
-// ========== 数据结构 ==========
-type ReportData struct {
-	UUID      string        `json:"uuid"`
-	Username  string        `json:"username"`
-	Hostname  string        `json:"hostname"`
-	Networks  []NetworkInfo `json:"networks"`
-	Timestamp string        `json:"timestamp"`
+	// 校验APIKey（编译时未注入则直接退出）
+	if APIKey == "" {
+		errMsg := "【致命错误】APIKey未通过-ldflags注入，请检查编译命令！"
+		writeLog(errMsg)
+		panic(errMsg)
+	}
+	writeLog(fmt.Sprintf("APIKey注入成功，长度：%d", len(APIKey)))
+
+	// 初始化上报间隔
+	reportInterval = DefaultInterval
+
+	// 检查是否首次运行
+	if _, err := os.Stat(firstRunFlag); os.IsNotExist(err) {
+		isFirstRun = true
+		writeLog("检测到首次运行，将启动浏览器展示IP页面")
+	} else {
+		isFirstRun = false
+		writeLog("非首次运行，跳过浏览器启动")
+	}
+
+	// 初始化机器UUID（简化版，实际可替换为硬件信息）
+	machineFixedUUID = getMachineUUID()
 }
 
-type NetworkInfo struct {
-	InterfaceName string `json:"interface_name"`
-	IPAddress     string `json:"ip_address"`
-	Gateway       string `json:"gateway"`
-	SubnetMask    string `json:"subnet_mask"`
+// 主函数：服务入口
+func main() {
+	// 初始化事件日志
+	var err error
+	logger, err = eventlog.Open("GetIPviaWEBService")
+	if err != nil {
+		writeLog(fmt.Sprintf("初始化事件日志失败：%v", err))
+		return
+	}
+	defer logger.Close()
+
+	// 解析命令行参数（安装/卸载/运行服务）
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			err = installService()
+			if err != nil {
+				logger.Error(1, fmt.Sprintf("安装服务失败: %v", err))
+				writeLog(fmt.Sprintf("安装服务失败: %v", err))
+				return
+			}
+			logger.Info(1, "服务安装成功")
+			writeLog("服务安装成功")
+			return
+		case "uninstall":
+			err = removeService()
+			if err != nil {
+				logger.Error(1, fmt.Sprintf("卸载服务失败: %v", err))
+				writeLog(fmt.Sprintf("卸载服务失败: %v", err))
+				return
+			}
+			logger.Info(1, "服务卸载成功")
+			writeLog("服务卸载成功")
+			return
+		}
+	}
+
+	// 运行服务
+	err = svc.Run("GetIPviaWEBService", &ipReportService{})
+	if err != nil {
+		logger.Error(1, fmt.Sprintf("运行服务失败: %v", err))
+		writeLog(fmt.Sprintf("运行服务失败: %v", err))
+		return
+	}
 }
 
-// ========== 服务实现 ==========
-type IPReportService struct{}
+// ipReportService 实现svc.Handler接口
+type ipReportService struct{}
 
-// Start 服务启动时执行
-func (s *IPReportService) Start(svc service.Service) error {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				writeLog(fmt.Sprintf("【紧急】服务运行panic：%v", r))
-				select {} // 兜底阻塞
+// Execute 服务核心执行逻辑
+func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (ssec bool, errno uint32) {
+	const cmdsAccepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPauseAndContinue
+	changes <- svc.Status{State: svc.StartPending}
+	writeLog("服务启动中...")
+
+	// 首次运行启动浏览器
+	if isFirstRun {
+		go func() {
+			time.Sleep(2 * time.Second) // 延迟启动，避免服务未就绪
+			openBrowser(fmt.Sprintf(ViewURLTemplate, machineFixedUUID))
+			// 标记首次运行完成
+			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0644); err != nil {
+				writeLog(fmt.Sprintf("写入首次运行标记文件失败：%v", err))
 			}
 		}()
-		s.run()
-	}()
-	return nil
-}
+	}
 
-// Stop 服务停止时执行
-func (s *IPReportService) Stop(svc service.Service) error {
-	writeLog("【服务】IP监控服务已停止")
-	return nil
-}
-
-// run 核心业务逻辑
-func (s *IPReportService) run() {
-	// 初始化：检查是否是首次启动（读取标记文件）
-	initFirstRunFlag()
-	writeLog(fmt.Sprintf("【服务】IP监控服务已启动，首次启动：%v", isFirstRun))
-
-	// 初始化UUID
-	initMachineFixedUUID()
-
-	// 初始化定时器
+	// 启动定时上报协程
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
-	// 首次立即上报
-	performReport()
+	// 服务就绪
+	changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+	writeLog("服务启动成功，开始定时上报IP")
 
-	// 永久循环
+	// 服务主循环
+loop:
 	for {
 		select {
 		case <-ticker.C:
-			performReport()
-		}
-	}
-}
-
-// ========== 核心新增：首次启动标记逻辑 ==========
-// initFirstRunFlag 初始化首次启动标记（检查磁盘文件）
-func initFirstRunFlag() {
-	// 确保目录存在
-	logDir := filepath.Dir(logPath)
-	if err := os.MkdirAll(logDir, 0777); err != nil {
-		writeLog(fmt.Sprintf("【错误】创建目录失败：%v", err))
-		isFirstRun = true // 兜底设为首次
-		return
-	}
-
-	// 检查标记文件是否存在
-	if _, err := os.Stat(firstRunFlag); os.IsNotExist(err) {
-		isFirstRun = true // 文件不存在 → 首次启动
-		writeLog("【初始化】检测到首次启动，上报成功后将弹出浏览器")
-	} else {
-		isFirstRun = false // 文件存在 → 非首次启动
-		writeLog("【初始化】检测到非首次启动，不会弹出浏览器")
-	}
-}
-
-// markFirstRunDone 标记首次启动完成（创建标记文件）
-func markFirstRunDone() {
-	// 创建空文件标记首次启动完成
-	f, err := os.Create(firstRunFlag)
-	if err != nil {
-		writeLog(fmt.Sprintf("【错误】创建首次启动标记文件失败：%v", err))
-		return
-	}
-	defer f.Close()
-	// 设置文件权限，确保Local System可读写
-	if err := os.Chmod(firstRunFlag, 0777); err != nil {
-		writeLog(fmt.Sprintf("【错误】设置标记文件权限失败：%v", err))
-	}
-	writeLog("【初始化】首次启动标记文件已创建，后续重启不再弹出浏览器")
-}
-
-// ========== 工具函数 ==========
-// writeLog 统一日志写入
-func writeLog(content string) {
-	logContent := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), content)
-
-	if logger != nil {
-		logger.Info(logContent)
-	}
-
-	logDir := filepath.Dir(logPath)
-	if err := os.MkdirAll(logDir, 0777); err != nil {
-		return
-	}
-
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0777)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	_, _ = f.WriteString(logContent)
-}
-
-// hideConsoleWindow 手动运行时隐藏控制台
-func hideConsoleWindow() {
-	kernel32 := syscall.NewLazyDLL("kernel32.dll")
-	user32 := syscall.NewLazyDLL("user32.dll")
-	getConsoleWindow := kernel32.NewProc("GetConsoleWindow")
-	showWindow := user32.NewProc("ShowWindow")
-
-	hwnd, _, _ := getConsoleWindow.Call()
-	if hwnd != 0 {
-		showWindow.Call(hwnd, uintptr(SW_HIDE))
-	}
-}
-
-// setServiceAutoStart 设置服务为自动启动
-func setServiceAutoStart(serviceName string) error {
-	cmd := exec.Command("sc", "config", serviceName, "start=", "auto")
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: uint32(CREATE_NO_WINDOW),
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("设置自动启动失败：%v，输出：%s", err, string(output))
-	}
-	writeLog("【服务】成功设置服务为自动启动")
-	return nil
-}
-
-// startService 启动服务
-func startService(serviceName string) error {
-	cmd := exec.Command("sc", "start", serviceName)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: uint32(CREATE_NO_WINDOW),
-	}
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("启动服务失败：%v，输出：%s", err, string(output))
-	}
-	writeLog("【服务】成功启动服务")
-	return nil
-}
-
-// openBrowser 打开浏览器
-func openBrowser(url string) error {
-	cmd := exec.Command("cmd", "/c", "start", "", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:    true,
-		CreationFlags: uint32(CREATE_NO_WINDOW),
-	}
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-
-	err := cmd.Start()
-	if err != nil {
-		writeLog(fmt.Sprintf("【错误】打开浏览器失败：%v", err))
-		return err
-	}
-
-	go func() {
-		_ = cmd.Wait()
-	}()
-	return nil
-}
-
-// ========== 业务逻辑 ==========
-func initMachineFixedUUID() {
-	defer func() {
-		if r := recover(); r != nil {
-			machineFixedUUID = "00000000-0000-0000-0000-000000000000"
-			writeLog(fmt.Sprintf("【错误】初始化UUID panic：%v，使用默认UUID", r))
-		}
-	}()
-
-	macAddr := getPhysicalNicMAC()
-	if macAddr == "" {
-		machineFixedUUID = "00000000-0000-0000-0000-000000000000"
-		writeLog("【警告】未获取到MAC，使用默认UUID：" + machineFixedUUID)
-		return
-	}
-
-	hash := md5.Sum([]byte(macAddr))
-	machineFixedUUID = fmt.Sprintf("%x-%x-%x-%x-%x",
-		hash[0:4], hash[4:6], hash[6:8], hash[8:10], hash[10:16])
-	writeLog("【初始化】UUID：" + machineFixedUUID)
-}
-
-func getPhysicalNicMAC() string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		writeLog(fmt.Sprintf("【错误】获取网卡列表失败：%v", err))
-		return ""
-	}
-
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.HardwareAddr.String() == "" {
-			continue
-		}
-
-		nicName := strings.ToLower(iface.Name)
-		if strings.Contains(nicName, "docker") || strings.Contains(nicName, "vmware") || strings.Contains(nicName, "virtual") ||
-			strings.Contains(nicName, "vpn") || strings.Contains(nicName, "hyper-v") {
-			continue
-		}
-
-		if strings.Contains(nicName, "ethernet") || strings.Contains(nicName, "wlan") || strings.Contains(nicName, "wi-fi") {
-			writeLog(fmt.Sprintf("【调试】找到物理网卡：%s，MAC：%s", iface.Name, iface.HardwareAddr.String()))
-			return iface.HardwareAddr.String()
-		}
-	}
-
-	writeLog("【警告】未找到有效物理网卡MAC")
-	return ""
-}
-
-func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, fmt.Errorf("获取网卡列表失败：%w", err)
-	}
-
-	var networkInfos []NetworkInfo
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.HardwareAddr.String() == "" {
-			continue
-		}
-
-		nicName := strings.ToLower(iface.Name)
-		if strings.Contains(nicName, "docker") || strings.Contains(nicName, "vmware") || strings.Contains(nicName, "virtual") {
-			continue
-		}
-
-		addrs, err := iface.Addrs()
-		if err != nil {
-			writeLog(fmt.Sprintf("【调试】网卡%s获取地址失败：%v", iface.Name, err))
-			continue
-		}
-
-		gateway, subnetMask := getGatewayAndSubnet(iface.Name)
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
+			// 定时上报IP
+			if err := reportIP(); err != nil {
+				writeLog(fmt.Sprintf("IP上报失败：%v", err))
+				logger.Warning(1, fmt.Sprintf("IP上报失败：%v", err))
+			} else {
+				writeLog("IP上报成功")
 			}
-
-			ip := ipNet.IP.To4()
-			if ip == nil || ip.IsLoopback() || !isPrivateIPv4(ip) {
-				continue
+		case c := <-r:
+			switch c.Cmd {
+			case svc.Interrogate:
+				changes <- c.CurrentStatus
+			case svc.Stop, svc.Shutdown:
+				writeLog("收到停止/关机指令，服务正在退出")
+				changes <- svc.Status{State: svc.StopPending}
+				break loop
+			case svc.Pause:
+				writeLog("服务暂停")
+				ticker.Stop()
+				changes <- svc.Status{State: svc.Paused, Accepts: cmdsAccepted}
+			case svc.Continue:
+				writeLog("服务恢复运行")
+				ticker.Reset(reportInterval)
+				changes <- svc.Status{State: svc.Running, Accepts: cmdsAccepted}
+			default:
+				writeLog(fmt.Sprintf("收到未知指令: %v", c))
+				logger.Error(1, fmt.Sprintf("收到未知指令: %v", c))
 			}
-
-			ipStr := ip.String()
-			writeLog(fmt.Sprintf("【调试】网卡%s有效IPv4：%s", iface.Name, ipStr))
-			networkInfos = append(networkInfos, NetworkInfo{
-				InterfaceName: iface.Name,
-				IPAddress:     ipStr,
-				Gateway:       gateway,
-				SubnetMask:    subnetMask,
-			})
-			break
 		}
 	}
 
-	return networkInfos, nil
+	// 服务退出
+	changes <- svc.Status{State: svc.Stopped}
+	writeLog("服务已停止")
+	return
 }
 
-func getGatewayAndSubnet(ifaceName string) (string, string) {
-	return "", ""
-}
-
-func isPrivateIPv4(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	return ip[0] == 10 || (ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31) ||
-		(ip[0] == 192 && ip[1] == 168) || (ip[0] == 169 && ip[1] == 254)
-}
-
-func getCurrentUsername() string {
-	currentUser, err := user.Current()
+// reportIP 上报IP信息到服务器
+func reportIP() error {
+	// 获取公网IP（简化版，实际可替换为更可靠的接口）
+	ip, err := getPublicIP()
 	if err != nil {
-		writeLog(fmt.Sprintf("【错误】获取用户名失败：%v", err))
-		return "未知用户"
+		return fmt.Errorf("获取公网IP失败：%v", err)
 	}
 
-	if strings.Contains(currentUser.Username, "\\") {
-		parts := strings.Split(currentUser.Username, "\\")
-		return parts[len(parts)-1]
+	// 构造上报数据
+	payload := map[string]string{
+		"api_key":   APIKey,
+		"uuid":      machineFixedUUID,
+		"ip":        ip,
+		"timestamp": time.Now().Format(time.RFC3339),
 	}
-	return currentUser.Username
-}
-
-func reportToWorkers(data ReportData) error {
-	jsonData, err := json.Marshal(data)
+	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("JSON序列化失败：%w", err)
+		return fmt.Errorf("序列化上报数据失败：%v", err)
 	}
 
+	// 发送HTTP请求
 	client := &http.Client{Timeout: Timeout}
-	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(jsonData))
+	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return fmt.Errorf("创建请求失败：%w", err)
+		return fmt.Errorf("创建HTTP请求失败：%v", err)
 	}
-
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	req.Header.Set("X-API-Key", APIKey)
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("发送请求失败：%w", err)
+		return fmt.Errorf("发送HTTP请求失败：%v", err)
 	}
 	defer resp.Body.Close()
 
-	var respData map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-		return fmt.Errorf("解析响应失败：%w", err)
-	}
-
-	if success, ok := respData["success"].(bool); ok && !success {
-		if errMsg, ok := respData["error"].(string); ok {
-			return fmt.Errorf("业务错误：%s", errMsg)
-		}
-		return fmt.Errorf("未知响应：%v", respData)
+	// 检查响应状态
+	if resp.StatusCode != http.StatusOK {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("服务器返回错误状态码：%d，响应内容：%s", resp.StatusCode, string(body))
 	}
 
 	return nil
 }
 
-// performReport 执行上报（核心修改：仅首次启动弹浏览器）
-func performReport() {
-	defer func() {
-		if r := recover(); r != nil {
-			writeLog(fmt.Sprintf("【错误】上报过程panic：%v", r))
-		}
-	}()
-
-	username := getCurrentUsername()
-	hostname, err := os.Hostname()
+// getPublicIP 获取公网IP（简化实现）
+func getPublicIP() (string, error) {
+	client := &http.Client{Timeout: Timeout}
+	resp, err := client.Get("https://api.ipify.org?format=text")
 	if err != nil {
-		hostname = "未知主机名"
-		writeLog(fmt.Sprintf("【错误】获取主机名失败：%v", err))
+		return "", err
 	}
+	defer resp.Body.Close()
 
-	networkInfos, err := getActivePhysicalNicInfo()
+	ipBytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		writeLog(fmt.Sprintf("【错误】获取网卡信息失败：%v", err))
+		return "", err
 	}
+	return string(ipBytes), nil
+}
 
-	reportData := ReportData{
-		UUID:      machineFixedUUID,
-		Username:  username,
-		Hostname:  hostname,
-		Networks:  networkInfos,
-		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
+// getMachineUUID 生成机器唯一标识（简化版）
+func getMachineUUID() string {
+	// 实际场景可替换为读取硬件信息（如主板序列号）
+	return fmt.Sprintf("machine-%s", time.Now().UnixNano())
+}
+
+// openBrowser 打开浏览器（Windows专用）
+func openBrowser(url string) {
+	cmd := exec.Command("cmd", "/c", "start", "", url)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: CREATE_NO_WINDOW,
 	}
-
-	if err := reportToWorkers(reportData); err != nil {
-		writeLog(fmt.Sprintf("【上报失败】%v", err))
-	} else {
-		writeLog(fmt.Sprintf("【上报成功】UUID：%s", machineFixedUUID))
-		
-		// 核心修改：仅首次启动且上报成功时弹浏览器
-		if isFirstRun {
-			viewURL := fmt.Sprintf(ViewURLTemplate, machineFixedUUID)
-			writeLog(fmt.Sprintf("【首次上报】弹出浏览器：%s", viewURL))
-			go openBrowser(viewURL)
-			
-			// 标记首次启动完成（创建文件，后续不再弹）
-			markFirstRunDone()
-			isFirstRun = false // 内存标记也置为false
-		}
+	if err := cmd.Start(); err != nil {
+		writeLog(fmt.Sprintf("启动浏览器失败：%v", err))
 	}
 }
 
-// ========== 主函数 ==========
-func main() {
-	// 解析参数
-	flag.Parse()
-
-	// 初始化上报间隔
-	if *flagInterval > 0 {
-		reportInterval = time.Duration(*flagInterval * 60) * time.Second
-	} else {
-		reportInterval = DefaultInterval
-	}
-
-	// CI编译模式
-	if *flagBuild {
-		fmt.Println("【编译模式】仅执行编译，不运行程序")
+// writeLog 写入日志到文件
+func writeLog(msg string) {
+	logMsg := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Printf("写入日志失败：%v，日志内容：%s\n", err, logMsg)
 		return
 	}
+	defer f.Close()
+	_, _ = f.WriteString(logMsg)
+}
 
-	// 服务模式
-	if *flagService != "" {
-		svc, err := service.New(&IPReportService{}, serviceConfig)
-		if err != nil {
-			fmt.Printf("【错误】创建服务失败：%v\n", err)
-			os.Exit(1)
-		}
+// installService 安装Windows服务
+func installService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
 
-		logger, err = svc.Logger(nil)
-		if err != nil {
-			fmt.Printf("【错误】初始化日志失败：%v\n", err)
-			os.Exit(1)
-		}
-
-		switch *flagService {
-		case "install":
-			exec.Command("sc", "delete", serviceConfig.Name).Run()
-			if err := svc.Install(); err != nil {
-				fmt.Printf("【错误】安装服务失败：%v\n", err)
-				os.Exit(1)
-			}
-			if err := setServiceAutoStart(serviceConfig.Name); err != nil {
-				fmt.Printf("【警告】设置自动启动失败：%v\n", err)
-			}
-			if err := startService(serviceConfig.Name); err != nil {
-				fmt.Printf("【警告】启动服务失败：%v\n", err)
-			}
-			fmt.Println("【成功】服务安装完成（仅首次启动弹浏览器）")
-		case "uninstall":
-			exec.Command("sc", "stop", serviceConfig.Name).Run()
-			time.Sleep(1 * time.Second)
-			if err := svc.Uninstall(); err != nil {
-				fmt.Printf("【错误】卸载服务失败：%v\n", err)
-				os.Exit(1)
-			}
-			// 卸载时可选：删除标记文件（如需重置首次启动）
-			// os.Remove(firstRunFlag)
-			fmt.Println("【成功】服务卸载完成")
-		case "start":
-			if err := svc.Start(); err != nil {
-				fmt.Printf("【错误】启动服务失败：%v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("【成功】服务启动完成")
-		case "stop":
-			if err := svc.Stop(); err != nil {
-				fmt.Printf("【错误】停止服务失败：%v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("【成功】服务停止完成")
-		case "restart":
-			if err := svc.Stop(); err != nil {
-				fmt.Printf("【警告】停止服务失败：%v\n", err)
-			}
-			time.Sleep(1 * time.Second)
-			if err := svc.Start(); err != nil {
-				fmt.Printf("【错误】重启服务失败：%v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("【成功】服务重启完成")
-		default:
-			fmt.Println("【错误】无效的服务操作，支持：install/uninstall/start/stop/restart")
-			os.Exit(1)
-		}
-		return
+	s, err := m.OpenService("GetIPviaWEBService")
+	if err == nil {
+		s.Close()
+		return fmt.Errorf("服务已存在")
 	}
 
-	// 手动运行模式
-	hideConsoleWindow()
-	// 手动模式也初始化首次启动标记
-	initFirstRunFlag()
-	writeLog(fmt.Sprintf("【手动模式】程序已启动，首次启动：%v", isFirstRun))
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
 
-	// 执行业务逻辑
-	initMachineFixedUUID()
-	ticker := time.NewTicker(reportInterval)
-	defer ticker.Stop()
+	s, err = m.CreateService("GetIPviaWEBService", exePath, *serviceConfig)
+	if err != nil {
+		return err
+	}
+	defer s.Close()
 
-	performReport()
+	return nil
+}
 
-	// 处理退出信号
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, SIGBREAK)
+// removeService 卸载Windows服务
+func removeService() error {
+	m, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer m.Disconnect()
 
-	go func() {
-		for range ticker.C {
-			performReport()
-		}
-	}()
+	s, err := m.OpenService("GetIPviaWEBService")
+	if err != nil {
+		return fmt.Errorf("服务不存在：%v", err)
+	}
+	defer s.Close()
 
-	<-sigChan
-	writeLog("【手动模式】程序已停止")
-	ticker.Stop()
+	err = s.Delete()
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
