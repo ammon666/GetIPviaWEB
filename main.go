@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"   // 新增：用于执行系统命令打开浏览器
 	"os/user"
+	"runtime"   // 新增：用于判断操作系统类型
 	"strings"
 	"time"
 )
@@ -17,7 +19,8 @@ import (
 const (
 	WorkersURL = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
 	Timeout    = 5 * time.Second                         // 上报超时时间
-	APIKey     = "your-secret-api-key"                   // 需与Workers代码中的API_KEY保持一致
+	APIKey     = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
+	ViewBaseURL = "https://getip.ammon.de5.net/view/"     // 新增：查看UUID的基础地址
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
@@ -101,12 +104,40 @@ func main() {
 		fmt.Printf("\n【上报失败】%v\n", err)
 	} else {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
+		// 新增：上报成功后调用浏览器打开指定URL
+		viewURL := fmt.Sprintf("%s%s", ViewBaseURL, machineFixedUUID)
+		if err := openBrowser(viewURL); err != nil {
+			fmt.Printf("【提示】自动打开浏览器失败，请手动访问：%s\n错误信息：%v\n", viewURL, err)
+		} else {
+			fmt.Printf("【提示】已自动打开浏览器访问：%s\n", viewURL)
+		}
 	}
 
 	// 7. 暂停程序（控制台窗口不立即关闭）
 	fmt.Println("\n按任意键退出...")
 	var input string
 	fmt.Scanln(&input)
+}
+
+// 新增：openBrowser 跨平台打开默认浏览器访问指定URL
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	// 根据不同操作系统执行对应命令
+	switch runtime.GOOS {
+	case "windows":
+		// Windows系统：使用cmd start命令打开
+		cmd = exec.Command("cmd", "/c", "start", url)
+	case "darwin":
+		// macOS系统：使用open命令打开
+		cmd = exec.Command("open", url)
+	case "linux":
+		// Linux系统：使用xdg-open命令打开
+		cmd = exec.Command("xdg-open", url)
+	default:
+		return fmt.Errorf("不支持的操作系统：%s，无法自动打开浏览器", runtime.GOOS)
+	}
+	// 执行命令（不等待浏览器关闭，仅启动）
+	return cmd.Start()
 }
 
 // getCurrentUsername 获取纯用户名（去掉Windows的计算机名前缀）
