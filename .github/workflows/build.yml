@@ -118,13 +118,13 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成最终版ISS脚本（省略开始菜单/准备安装步骤） ==========
+      # ========== 生成最终版ISS脚本（修复Flags错误） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（省略开始菜单/准备安装步骤）"
+          Write-Host "🔧 开始生成ISS脚本（修复Flags错误）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
@@ -165,13 +165,13 @@ jobs:
           " Name: ""{group}\GetIPviaWEB Service""; Filename: ""{app}\GetIPviaWEB.exe""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 核心修改：传递install参数，以管理员身份运行，阻塞等待安装完成
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall skipifsilent runasadmin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 核心修复：替换runasadmin为runashighest，保留postinstall/skipifsilent
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册Windows服务""; Flags: postinstall skipifsilent runashighest" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 卸载时先关闭进程
+          # 卸载时同样使用runashighest
           " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runascurrentuser" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runasadmin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runashighest" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -180,7 +180,7 @@ jobs:
           $content = Get-Content GetIPviaWEB.iss -Raw
           $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
           
-          Write-Host "✅ ISS脚本生成成功（省略开始菜单/准备安装步骤）"
+          Write-Host "✅ ISS脚本生成成功（修复Flags错误）"
         id: generate-iss
 
       # ========== 编译安装包 ==========
