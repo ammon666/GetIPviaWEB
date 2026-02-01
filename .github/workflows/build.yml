@@ -14,12 +14,11 @@ jobs:
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # 适配你的Go版本（建议1.19+）
-          cache: true # 启用Go模块缓存，加速编译
+          go-version: '1.22' # 适配你的Go版本
+          cache: true
 
-      - name: 验证 GitHub Secrets 是否配置（仅检查非空，不打印明文）
+      - name: 验证 GitHub Secrets 是否配置（仅检查非空）
         run: |
-          # 仅检查Secret是否存在，不打印明文
           if ("${{ secrets.IP_REPORT_API_KEY }}" -eq "") {
               echo "❌ 错误：IP_REPORT_API_KEY 未配置，请在仓库Secrets中添加该密钥"
               exit 1
@@ -29,16 +28,12 @@ jobs:
 
       - name: 修复模块校验和并整理依赖
         run: |
-          # 核心：清理本地模块缓存，解决校验和不匹配问题
           go clean -modcache
-          # 重新整理依赖（基于已有go.mod，更新go.sum为最新校验和）
           go mod tidy
 
       - name: 编译可执行文件（注入APIKey）
         run: |
-          # 注入GitHub Secrets中的APIKey到二进制文件
           go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
-          # 验证编译产物
           if (Test-Path "GetIPviaWEB.exe") {
               echo "✅ 编译成功，文件大小：$(Get-Item GetIPviaWEB.exe | Select-Object -ExpandProperty Length) 字节"
           } else {
@@ -46,28 +41,33 @@ jobs:
               exit 1
           }
 
-      - name: 安装/验证 Inno Setup（跳过重复安装，直接验证）
+      - name: 安装/验证 Inno Setup（兼容所有版本输出格式）
         run: |
-          # 先检查ISCC是否已安装，未安装再用choco安装
+          # 步骤1：检查并安装ISCC（仅未安装时执行）
           if (-not (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue)) {
               echo "🔧 Inno Setup 未安装，开始通过Chocolatey安装..."
-              choco install innosetup -y --no-progress
+              choco install innosetup -y --no-progress --force
           } else {
               echo "✅ Inno Setup 已预装，跳过安装步骤"
           }
-          
-          # 验证安装并获取版本（修复版本号提取逻辑）
-          $isccVersion = & ISCC.exe /version 2>&1 | Select-String -Pattern "Inno Setup (\d+\.\d+\.\d+)"
-          if ($isccVersion) {
-              echo "✅ Inno Setup 安装成功，版本：$($isccVersion.Matches.Groups[1].Value)"
-          } else {
-              echo "❌ Inno Setup 安装失败，无法获取版本号"
+
+          # 步骤2：验证ISCC可用性（核心：放弃复杂版本提取，仅验证可执行）
+          try {
+              # 执行ISCC /? 验证是否能正常调用，重定向输出避免冗余
+              & ISCC.exe /? 2>&1 | Out-Null
+              if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 1) { # ISCC /? 退出码为1是正常的
+                  echo "✅ Inno Setup 验证成功（可正常调用ISCC编译器）"
+              } else {
+                  echo "❌ Inno Setup 验证失败，ISCC调用异常（退出码：$LASTEXITCODE）"
+                  exit 1
+              }
+          } catch {
+              echo "❌ Inno Setup 验证失败，异常信息：$_"
               exit 1
           }
 
-      - name: 生成 Inno Setup 安装包脚本（已删除4行发布者配置）
+      - name: 生成 Inno Setup 安装包脚本
         run: |
-          # 写入 Inno Setup 配置脚本（.iss），删除了AppPublisher等4行配置
           @'
           [Setup]
           AppName=GetIPviaWEB Service
@@ -96,29 +96,32 @@ jobs:
           [UninstallDelete]
           Type: filesandordirs; Name: "{app}"
           '@ | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8
-          echo "✅ Inno Setup 脚本生成完成（已删除4行发布者配置）"
+          echo "✅ Inno Setup 脚本生成完成"
 
-      - name: 编译图形化安装包（修复ISCC调用逻辑）
+      - name: 编译图形化安装包（增强容错）
         run: |
-          # 创建安装包输出目录
+          # 创建输出目录
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
           
-          # 调用ISCC编译，指定完整脚本路径（解决参数错误）
-          echo "🔧 开始编译安装包，脚本路径：$((Get-Location).Path)\GetIPviaWEB.iss"
-          & ISCC.exe /Q "$((Get-Location).Path)\GetIPviaWEB.iss"
+          # 核心：调用ISCC编译，强制使用完整路径+详细日志
+          $issPath = Resolve-Path GetIPviaWEB.iss
+          echo "🔧 开始编译安装包，脚本路径：$issPath"
           
-          # 检查编译退出码
-          if ($LASTEXITCODE -ne 0) {
-              echo "❌ 安装包编译失败，ISCC退出码：$LASTEXITCODE"
-              exit 1
-          }
+          # 执行编译并捕获所有输出
+          & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup" "$issPath" 2>&1
+          $compileExitCode = $LASTEXITCODE
           
-          # 验证安装包是否生成
-          $setupFile = "./installer/GetIPviaWEB-Setup.exe"
-          if (Test-Path $setupFile) {
-              echo "✅ 安装包编译成功，文件大小：$(Get-Item $setupFile | Select-Object -ExpandProperty Length) 字节"
+          # 检查编译结果
+          if ($compileExitCode -eq 0) {
+              $setupFile = "./installer/GetIPviaWEB-Setup.exe"
+              if (Test-Path $setupFile) {
+                  echo "✅ 安装包编译成功，文件大小：$(Get-Item $setupFile | Select-Object -ExpandProperty Length) 字节"
+              } else {
+                  echo "⚠️ ISCC编译退出码为0，但未找到安装包文件"
+                  exit 1
+              }
           } else {
-              echo "❌ 安装包编译失败，未生成安装文件"
+              echo "❌ 安装包编译失败，ISCC退出码：$compileExitCode"
               exit 1
           }
 
