@@ -1,67 +1,32 @@
-# 工作流名称
-name: Build Go Program on Windows
+name: Build Windows Service
+on: [push]
 
-# 触发条件：push或pull_request到main分支时触发
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-# 任务定义
 jobs:
   build:
-    # 指定运行环境为Windows最新版
     runs-on: windows-latest
-
-    # 步骤列表
     steps:
-      # 步骤1：拉取代码到Runner
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      # 步骤2：安装Go环境（根据需要指定版本）
+      - uses: actions/checkout@v4
+      
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'  # 替换为你的Go项目实际使用的版本
-          cache: true  # 启用Go模块缓存，加速构建
-
-      # 步骤3：打印系统信息（修正Shell为Bash，解决if语法报错）
-      - name: Print system information
-        shell: bash  # 关键：指定用Bash执行该脚本
+          go-version: '1.20'
+          
+      - name: Clean Go cache and old sum
         run: |
-          echo "=== 系统信息 ==="
-          echo "操作系统：$(uname -a)"
-          echo "Go版本：$(go version)"
-          echo "工作目录：$(pwd)"
-          # 示例：判断自定义Secret是否存在（替换为你的实际Secret名称）
-          if [ "${{ secrets.MY_CUSTOM_SECRET }}" != "" ]; then
-            echo "✅ 自定义Secret已配置"
-          else
-            echo "⚠️ 自定义Secret未配置（非必须项）"
-          fi
-
-      # 步骤4：编译Go程序（main.go）
-      - name: Build Go program
-        shell: bash  # 指定Bash执行编译命令
+          go clean -modcache
+          del go.sum
+          
+      - name: Update dependencies
         run: |
-          echo "=== 开始编译main.go ==="
-          # 编译main.go并输出为可执行文件（Windows下后缀为.exe）
-          go build -o GetIPviaWEB.exe -ldflags="-s -w" main.go
-          # 验证编译结果
-          if [ -f "GetIPviaWEB.exe" ]; then
-            echo "✅ 编译成功！生成可执行文件：GetIPviaWEB.exe"
-            ls -lh GetIPviaWEB.exe  # 打印文件信息
-          else
-            echo "❌ 编译失败！未生成可执行文件"
-            exit 1  # 编译失败则终止工作流
-          fi
-
-      # 步骤5：上传编译产物（便于下载）
-      - name: Upload build artifact
+          go mod init getipviaweb
+          go mod tidy
+          
+      - name: Build Windows service
+        run: go build -ldflags="-H windowsgui -s -w" -o GetIPviaWEB.exe main.go
+          
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GetIPviaWEB-Windows
+          name: GetIPviaWEB
           path: GetIPviaWEB.exe
-          retention-days: 7  # 产物保留7天
