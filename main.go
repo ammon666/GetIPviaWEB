@@ -17,11 +17,10 @@ import (
 
 // 配置项：修正后的正确上报地址（删除了错误的POST%20）
 const (
-	WorkersURL       = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
-	QueryURL         = "https://getip.ammon.de5.net/api/query"  // UUID查询地址（根据实际地址调整）
-	Timeout          = 5 * time.Second                         // 上报超时时间
-	APIKey           = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
-	OpenBrowserAfter = true                                    // 是否在上报成功后打开浏览器
+	WorkersURL = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
+	ViewBaseURL = "https://getip.ammon.de5.net/view/"      // 查看地址基础URL
+	Timeout    = 5 * time.Second                         // 上报超时时间
+	APIKey     = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
@@ -101,26 +100,24 @@ func main() {
 		Networks:  networkInfos,
 		Timestamp: time.Now().Format("2006-01-02 15:04:05"),
 	}
-	reportSuccess := false
 	if err := reportToWorkers(reportData); err != nil {
 		fmt.Printf("\n【上报失败】%v\n", err)
 	} else {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
-		reportSuccess = true
-	}
-
-	// 7. 上报成功后打开浏览器访问查询地址
-	if OpenBrowserAfter && reportSuccess {
-		queryFullURL := fmt.Sprintf("%s?uuid=%s", QueryURL, machineFixedUUID)
-		fmt.Printf("\n【打开浏览器】正在访问UUID查询地址：%s\n", queryFullURL)
-		if err := openBrowser(queryFullURL); err != nil {
-			fmt.Printf("【打开浏览器失败】%v\n", err)
+		
+		// 拼接查看地址并自动打开
+		viewURL := ViewBaseURL + machineFixedUUID
+		fmt.Println("【查看地址】", viewURL)
+		
+		// 尝试自动打开浏览器
+		if err := openBrowser(viewURL); err != nil {
+			fmt.Printf("【提示】自动打开浏览器失败：%v，请手动访问：%s\n", err, viewURL)
 		} else {
-			fmt.Println("【打开浏览器成功】请在浏览器中查看查询结果")
+			fmt.Println("【提示】已自动打开浏览器访问查看地址")
 		}
 	}
 
-	// 8. 暂停程序（控制台窗口不立即关闭）
+	// 7. 暂停程序（控制台窗口不立即关闭）
 	fmt.Println("\n按任意键退出...")
 	var input string
 	fmt.Scanln(&input)
@@ -375,12 +372,11 @@ func reportToWorkers(data ReportData) error {
 	return nil
 }
 
-// openBrowser 打开指定URL的浏览器（跨平台兼容）
+// openBrowser 跨平台打开浏览器访问指定URL
 func openBrowser(url string) error {
 	var cmd string
 	var args []string
 
-	// 根据不同操作系统选择打开浏览器的命令
 	switch runtime.GOOS {
 	case "windows":
 		cmd = "cmd"
@@ -395,9 +391,6 @@ func openBrowser(url string) error {
 		return fmt.Errorf("不支持的操作系统：%s", runtime.GOOS)
 	}
 
-	// 执行打开浏览器命令（不阻塞主程序）
-	cmdExec := exec.Command(cmd, args...)
-	cmdExec.Stdout = os.Stdout
-	cmdExec.Stderr = os.Stderr
-	return cmdExec.Start()
+	// 执行命令打开浏览器
+	return exec.Command(cmd, args...).Start()
 }
