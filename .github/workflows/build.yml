@@ -14,35 +14,31 @@ jobs:
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # 适配你的Go版本，建议1.19+
+          go-version: '1.22' # 适配你的Go版本（建议与本地开发一致）
           cache: true # 启用Go模块缓存，加速编译
 
-      - name: 初始化/清理Go模块（修复校验和问题）
+      - name: 修复模块校验和并整理依赖
         run: |
-          # 仅当go.mod不存在时才初始化
-          if (-not (Test-Path "go.mod")) {
-              go mod init GetIPviaWEB
-          }
-          # 清理旧的go.sum和缓存，解决校验和不匹配问题
+          # 核心：清理本地模块缓存，解决校验和不匹配问题
           go clean -modcache
-          if (Test-Path "go.sum") {
-              Remove-Item "go.sum" -Force
-          }
-          # 下载正确的依赖（仅golang.org/x/sys，移除错误的kardianos依赖）
-          go get golang.org/x/sys/windows/svc@latest
-          go mod tidy # 整理依赖，生成正确的go.sum
+          # 重新整理依赖（基于已有go.mod，更新go.sum为最新校验和）
+          go mod tidy
 
       - name: 编译可执行文件（注入APIKey）
         run: |
-          # 核心：通过-ldflags将GitHub Secrets中的APIKey注入到main.APIKey变量
+          # 注入GitHub Secrets中的APIKey到二进制文件
           go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
-          # 验证编译结果
-          dir GetIPviaWEB.exe
-          echo "编译完成，APIKey已嵌入二进制文件"
+          # 验证编译产物
+          if (Test-Path "GetIPviaWEB.exe") {
+              echo "✅ 编译成功，文件大小：$(Get-Item GetIPviaWEB.exe | Select-Object -ExpandProperty Length) 字节"
+          } else {
+              echo "❌ 编译失败，未生成可执行文件"
+              exit 1
+          }
 
       - name: 上传编译产物
         uses: actions/upload-artifact@v4
         with:
           name: GetIPviaWEB-Windows-Service
           path: GetIPviaWEB.exe
-          retention-days: 7 # 产物保留7天，可根据需要调整
+          retention-days: 7
