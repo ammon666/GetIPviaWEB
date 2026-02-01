@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings" // 新增：导入strings包
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,17 +31,18 @@ var (
 	displayName    = "IP自动上报服务"          // 服务显示名称
 	serviceDesc    = "后台运行，每次启动上报IP，仅首次打开弹浏览器"
 
-	// 业务配置
+	// 业务配置（还原第一版的URL）
 	APIKey         = "" // 编译时通过-ldflags注入：-X main.APIKey=你的密钥
-	reportURL      = "https://getip.ammon.de5.net/api/report"
-	viewURL        = "https://getip.ammon.de5.net/view/%s"
-	timeout        = 10 * time.Second
-	reportInterval = 1 * time.Minute
+	WorkersURL     = "https://getip.ammon.de5.net/api/report"  // 第一版上报地址
+	ViewURLTemplate = "https://getip.ammon.de5.net/view/%s"    // 第一版浏览器打开地址
+	Timeout        = 10 * time.Second
+	DefaultInterval = 1 * time.Minute
 
 	// 全局变量
 	logger         *eventlog.Log
-	machineUUID    string
+	machineFixedUUID string
 	isFirstRun     bool
+	reportInterval time.Duration
 )
 
 // init：初始化基础配置（优先执行）
@@ -53,12 +54,15 @@ func init() {
 
 	// 2. 校验APIKey（强制编译时注入）
 	if APIKey == "" {
-		errMsg := "APIKey未配置！请使用编译命令：go build -ldflags \"-X main.APIKey=你的密钥\""
+		errMsg := "APIKey未配置！请使用编译命令：go build -ldflags \"-X main.APIKey=你的密钥\" -ldflags -H=windowsgui"
 		writeLog(errMsg)
 		panic(errMsg)
 	}
 
-	// 3. 检测是否首次运行
+	// 3. 初始化上报间隔
+	reportInterval = DefaultInterval
+
+	// 4. 检测是否首次运行
 	if _, err := os.Stat(firstRunFlag); os.IsNotExist(err) {
 		isFirstRun = true
 		writeLog("检测到首次运行，将弹出浏览器")
@@ -67,12 +71,21 @@ func init() {
 		writeLog("非首次运行，跳过浏览器弹窗")
 	}
 
-	// 4. 生成机器唯一标识（简化版，可替换为硬件信息）
-	machineUUID = fmt.Sprintf("uuid_%d", time.Now().UnixNano())
+	// 5. 生成机器唯一标识（还原第一版逻辑）
+	machineFixedUUID = getMachineUUID()
+}
+
+// getMachineUUID 生成机器唯一标识（还原第一版简化版）
+func getMachineUUID() string {
+	// 实际场景可替换为读取硬件信息（如主板序列号）
+	return fmt.Sprintf("machine-%s", time.Now().UnixNano())
 }
 
 // 主函数：服务入口（处理安装/卸载/运行）
 func main() {
+	// 强制隐藏控制台窗口（编译+运行双重保障）
+	hideConsoleWindow()
+
 	// 初始化事件日志（Windows服务标准日志）
 	var err error
 	logger, err = eventlog.Open(serviceName)
@@ -127,14 +140,68 @@ func main() {
 		return
 	}
 	if isService {
-		// 作为Windows服务运行（后台）
+		// 作为Windows服务运行（完全后台，不受控制台影响）
 		if err := svc.Run(serviceName, &ipReportService{}); err != nil {
 			logError(fmt.Sprintf("服务运行失败：%v", err))
 		}
 	} else {
-		// 控制台调试运行（方便测试）
-		logInfo("非服务模式，控制台运行（调试用）")
-		runConsole()
+		// 非服务模式也强制后台运行（无控制台）
+		logInfo("非服务模式，后台运行（无控制台）")
+		runBackground()
+	}
+}
+
+// hideConsoleWindow 强制隐藏控制台窗口（运行时保障）
+func hideConsoleWindow() {
+	hwnd := windows.GetConsoleWindow()
+	if hwnd != 0 {
+		// 隐藏窗口
+		windows.ShowWindow(hwnd, windows.SW_HIDE)
+		// 从任务栏移除
+		windows.SetWindowPos(hwnd, 0, 0, 0, 0, 0, windows.SWP_HIDEWINDOW|windows.SWP_NOMOVE|windows.SWP_NOSIZE)
+	}
+}
+
+// runBackground 非服务模式下的纯后台运行逻辑（无控制台、关闭控制台不终止）
+func runBackground() {
+	// 立即上报IP
+	logInfo("后台运行模式：立即执行首次上报")
+	if err := reportIP(); err != nil {
+		logError(fmt.Sprintf("首次上报失败：%v", err))
+	} else {
+		logInfo("首次上报成功")
+	}
+
+	// 首次运行弹浏览器（还原第一版URL）
+	if isFirstRun {
+		go func() {
+			time.Sleep(1 * time.Second)
+			logInfo("后台运行模式：启动浏览器展示IP页面")
+			if err := openBrowser(fmt.Sprintf(ViewURLTemplate, machineFixedUUID)); err != nil {
+				logError(fmt.Sprintf("打开浏览器失败：%v", err))
+			}
+			// 创建首次运行标记（后续不再弹）
+			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0600); err != nil {
+				logError(fmt.Sprintf("写入首次运行标记失败：%v", err))
+			}
+		}()
+	}
+
+	// 启动定时上报（无限循环，不受控制台关闭影响）
+	ticker := time.NewTicker(reportInterval)
+	defer ticker.Stop()
+	logInfo("后台运行模式：开始定时上报（永久运行）")
+
+	// 阻塞主线程（防止程序退出）
+	for {
+		select {
+		case <-ticker.C:
+			if err := reportIP(); err != nil {
+				logError(fmt.Sprintf("定时上报失败：%v", err))
+			} else {
+				logInfo("定时上报成功")
+			}
+		}
 	}
 }
 
@@ -144,7 +211,6 @@ type ipReportService struct{}
 // Execute：服务核心逻辑（Windows服务入口）
 func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	// 1. 服务启动中状态
-	// 修复：移除错误的svc.AcceptInterrogate，Interrogate是默认支持的，无需显式声明
 	const acceptedCmds = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptPauseAndContinue
 	changes <- svc.Status{State: svc.StartPending, WaitHint: 2000}
 
@@ -156,12 +222,12 @@ func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 		logInfo("首次上报成功")
 	}
 
-	// 3. 首次运行弹浏览器（仅第一次）
+	// 3. 首次运行弹浏览器（还原第一版URL）
 	if isFirstRun {
 		go func() {
 			time.Sleep(1 * time.Second) // 延迟1秒，避免服务未就绪
 			logInfo("启动浏览器展示IP页面")
-			if err := openBrowser(fmt.Sprintf(viewURL, machineUUID)); err != nil {
+			if err := openBrowser(fmt.Sprintf(ViewURLTemplate, machineFixedUUID)); err != nil {
 				logError(fmt.Sprintf("打开浏览器失败：%v", err))
 			}
 			// 创建首次运行标记（后续不再弹）
@@ -177,7 +243,7 @@ func (s *ipReportService) Execute(args []string, r <-chan svc.ChangeRequest, cha
 
 	// 5. 服务就绪：切换为运行状态
 	changes <- svc.Status{State: svc.Running, Accepts: acceptedCmds}
-	logInfo("服务已进入运行状态（后台）")
+	logInfo("服务已进入运行状态（完全后台）")
 
 	// 6. 服务主循环（处理指令+定时任务）
 loop:
@@ -194,7 +260,7 @@ loop:
 			// 处理服务控制指令（停止/暂停/查询等）
 			switch req.Cmd {
 			case svc.Interrogate:
-				changes <- req.CurrentStatus // 响应状态查询（无需额外配置）
+				changes <- req.CurrentStatus // 响应状态查询
 			case svc.Stop, svc.Shutdown:
 				logInfo("收到停止指令，服务即将退出")
 				changes <- svc.Status{State: svc.StopPending, WaitHint: 1000}
@@ -219,7 +285,7 @@ loop:
 	return false, 0
 }
 
-// reportIP：上报IP到服务器（核心业务逻辑）
+// reportIP：上报IP到服务器（还原第一版逻辑）
 func reportIP() error {
 	// 1. 获取公网IP
 	ip, err := getPublicIP()
@@ -227,44 +293,44 @@ func reportIP() error {
 		return fmt.Errorf("获取公网IP失败：%v", err)
 	}
 
-	// 2. 构造上报数据
+	// 2. 构造上报数据（还原第一版字段）
 	payload := map[string]string{
 		"api_key":   APIKey,
-		"uuid":      machineUUID,
+		"uuid":      machineFixedUUID,
 		"ip":        ip,
 		"timestamp": time.Now().Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("序列化数据失败：%v", err)
+		return fmt.Errorf("序列化上报数据失败：%v", err)
 	}
 
-	// 3. 发送HTTP请求
-	client := &http.Client{Timeout: timeout}
-	req, err := http.NewRequest("POST", reportURL, bytes.NewBuffer(payloadBytes))
+	// 3. 发送HTTP请求（使用第一版的WorkersURL）
+	client := &http.Client{Timeout: Timeout}
+	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
-		return fmt.Errorf("创建请求失败：%v", err)
+		return fmt.Errorf("创建HTTP请求失败：%v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("发送请求失败：%v", err)
+		return fmt.Errorf("发送HTTP请求失败：%v", err)
 	}
 	defer resp.Body.Close()
 
 	// 4. 校验响应
 	if resp.StatusCode != http.StatusOK {
 		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("服务器返回错误：%d，内容：%s", resp.StatusCode, string(body))
+		return fmt.Errorf("服务器返回错误状态码：%d，响应内容：%s", resp.StatusCode, string(body))
 	}
 
 	return nil
 }
 
-// getPublicIP：获取公网IP（稳定接口）
+// getPublicIP：获取公网IP（还原第一版逻辑）
 func getPublicIP() (string, error) {
-	client := &http.Client{Timeout: timeout}
+	client := &http.Client{Timeout: Timeout}
 	resp, err := client.Get("https://api.ipify.org?format=text")
 	if err != nil {
 		return "", err
@@ -278,7 +344,7 @@ func getPublicIP() (string, error) {
 	return string(ipBytes), nil
 }
 
-// openBrowser：Windows后台打开浏览器（无控制台窗口）
+// openBrowser：Windows后台打开浏览器（无控制台窗口，还原第一版逻辑）
 func openBrowser(url string) error {
 	// 关键：设置进程属性，隐藏控制台窗口
 	cmd := exec.Command("cmd", "/c", "start", "", url)
@@ -316,7 +382,7 @@ func installService() error {
 		mgr.Config{
 			DisplayName: displayName,
 			Description: serviceDesc,
-			StartType:   mgr.StartAutomatic, // 开机自动启动（可选：StartManual手动）
+			StartType:   mgr.StartAutomatic, // 开机自动启动（完全后台）
 		},
 	)
 	if err != nil {
@@ -407,7 +473,7 @@ func writeLog(msg string) {
 	logMsg := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), msg)
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
-		fmt.Printf("写入日志失败：%v，内容：%s\n", err, logMsg)
+		// 无控制台，仅写入文件，不打印
 		return
 	}
 	defer f.Close()
@@ -425,33 +491,5 @@ func logError(msg string) {
 	writeLog("[ERROR] " + msg)
 	if logger != nil {
 		logger.Error(1, msg)
-	}
-}
-
-// ---------- 控制台调试函数（非服务模式） ----------
-func runConsole() {
-	// 立即上报
-	logInfo("控制台模式：立即上报IP")
-	if err := reportIP(); err != nil {
-		logError(fmt.Sprintf("上报失败：%v", err))
-	}
-
-	// 首次弹浏览器
-	if isFirstRun {
-		logInfo("控制台模式：打开浏览器")
-		_ = openBrowser(fmt.Sprintf(viewURL, machineUUID))
-		_ = ioutil.WriteFile(firstRunFlag, []byte("1"), 0600)
-	}
-
-	// 模拟定时上报（控制台可按Ctrl+C退出）
-	ticker := time.NewTicker(reportInterval)
-	defer ticker.Stop()
-	logInfo("控制台模式：开始定时上报（按Ctrl+C退出）")
-	for range ticker.C {
-		if err := reportIP(); err != nil {
-			logError(fmt.Sprintf("定时上报失败：%v", err))
-		} else {
-			logInfo("定时上报成功")
-		}
 	}
 }
