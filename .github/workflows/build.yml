@@ -1,55 +1,35 @@
-# 工作流名称
-name: Build Windows IP Monitor Executable
-
-# 触发条件：推送到main分支、创建PR到main分支时执行
+name: Build & Run IP Monitor
 on:
   push:
     branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
-# 定义任务
 jobs:
   build-windows:
-    # 指定运行环境为Windows
     runs-on: windows-latest
-    # 全局环境变量：配置Go代理 + 引入Secret（按需扩展）
-    env:
-      GOPROXY: "https://goproxy.cn,direct"
-      GO111MODULE: "on"
-      # 【方式1】将Secret作为环境变量全局注入（可在任意步骤使用）
-      APP_SECRET: ${{ secrets.IP_MONITOR_SECRET }} # 替换为你的Secret名称
-
-    # 任务步骤
     steps:
-      # 步骤1：拉取代码到CI服务器
-      - name: Checkout source code
+      - name: 检出代码
         uses: actions/checkout@v4
 
-      # 步骤2：配置Go环境
-      - name: Set up Go
+      - name: 设置Go环境
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
-          cache: true
+          go-version: '1.22' # 可根据实际Go版本调整
 
-      # 步骤3：整理依赖
-      - name: Install and tidy dependencies
-        run: go mod tidy
+      - name: 调试 - 验证Secrets传递
+        run: echo "WORKERS_API_KEY存在：${{ secrets.WORKERS_API_KEY != '' }}"
 
-      # 步骤4：编译（支持2种Secret注入方式，选其一即可）
-      - name: Build Windows executable with Secret
+      - name: 编译程序
         env:
-          # 【方式2】仅在编译步骤注入Secret（更安全，缩小作用域）
-          COMPILE_SECRET: ${{ secrets.IP_MONITOR_COMPILE_SECRET }}
-        run: |
-          # 方式A：通过ldflags将Secret注入Go代码的变量中（推荐）
-          go build -ldflags="-s -w -X main.appSecret=${{ secrets.IP_MONITOR_SECRET }} -X main.compileSecret=${COMPILE_SECRET}" -o ip-monitor.exe
-          # 方式B：仅通过环境变量传递（需在Go代码中读取环境变量）
-          # go build -ldflags="-s -w" -o ip-monitor.exe
+          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }} # 传递Secrets为环境变量
+        run: go build -o ip-monitor.exe main.go
 
-      # 可选步骤：上传编译产物（产物中已包含注入的Secret）
-      - name: Upload build artifact
+      - name: 运行程序（执行上报）
+        env:
+          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }} # 运行时也要传递
+        run: .\ip-monitor.exe
+
+      - name: 上传产物（可选）
         uses: actions/upload-artifact@v4
         with:
           name: ip-monitor-windows
