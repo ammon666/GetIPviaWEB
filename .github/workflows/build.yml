@@ -124,11 +124,11 @@ jobs:
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（管理员校验+静默卸载+文件名提示）"
+          Write-Host "🔧 开始生成ISS脚本（适配新版Inno Setup+管理员校验+静默卸载）"
           # 清空旧文件
           if (Test-Path "IPReportService.iss") { Remove-Item "IPReportService.iss" -Force }
           
-          # 逐行写入ISS内容
+          # 逐行写入ISS内容（核心修复：替换废弃的CheckWin32Version）
           " [Setup]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Force
           " AppName=IP自动上报服务" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           " AppVersion=1.0.0" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
@@ -139,7 +139,7 @@ jobs:
           " OutputBaseFilename=IPReportService-Setup(需要管理员权限)" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           " Compression=lzma" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           " SolidCompression=yes" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          # 全局管理员权限
+          # 全局管理员权限（新版Inno Setup推荐配置）
           " PrivilegesRequired=admin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           # 静默卸载配置
           " UninstallSilent=yes"                # 卸载静默执行
@@ -188,14 +188,14 @@ jobs:
           " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           
-          # [Code]段（安装前管理员校验）
+          # [Code]段（核心修复：移除废弃的CheckWin32Version，仅保留IsAdminLoggedOn）
           " [Code]" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           " function InitializeSetup(): Boolean;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           " var" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           "   IsAdmin: Boolean;" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           " begin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   // 校验是否为管理员权限" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
-          "   IsAdmin := CheckWin32Version(6, 0) and IsAdminLoggedOn();" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          "   // 新版Inno Setup直接使用IsAdminLoggedOn()校验管理员权限（无需系统版本校验）" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
+          "   IsAdmin := IsAdminLoggedOn();" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           "   if not IsAdmin then" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           "   begin" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
           "     // 弹出错误提示框" | Out-File -FilePath IPReportService.iss -Encoding UTF8 -Append
@@ -214,7 +214,7 @@ jobs:
           $content = Get-Content IPReportService.iss -Raw
           $content -replace "`n", "`r`n" | Set-Content IPReportService.iss -Encoding UTF8 -Force
           
-          Write-Host "✅ ISS脚本生成成功"
+          Write-Host "✅ ISS脚本生成成功（适配新版Inno Setup）"
         id: generate-iss
 
       # ========== 编译安装包 ==========
