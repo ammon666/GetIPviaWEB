@@ -58,18 +58,7 @@ jobs:
             exit 1  # 编译失败则终止工作流
           fi
 
-      # 步骤5（可选）：运行编译后的程序（若需要验证运行）
-      - name: Run compiled program (optional)
-        shell: bash
-        run: |
-          echo "=== 运行编译后的程序 ==="
-          # 若你的程序有仅编译模式（如-build参数），可执行：
-          # go run main.go -build
-          # 或直接运行生成的exe文件：
-          ./GetIPviaWEB.exe
-        continue-on-error: false  # 程序运行失败则终止工作流（根据需要改为true）
-
-      # 步骤6（可选）：上传编译产物（便于下载）
+      # 步骤5：上传编译产物（便于下载）
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
