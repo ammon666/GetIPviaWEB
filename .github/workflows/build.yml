@@ -58,7 +58,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           
           Write-Host "🔧 开始编译Go程序（注入APIKey）"
-          go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
+          go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" -H=windowsgui main.go
           if ($LASTEXITCODE -ne 0) {
               Write-Host "❌ Go程序编译失败，退出码：$LASTEXITCODE"
               exit 1
@@ -118,17 +118,17 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成Inno Setup安装包脚本（统一名称为GetIPviaWEB） ==========
+      # ========== 生成Inno Setup安装包脚本（强化静默卸载） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（适配新版Inno Setup+管理员校验+静默卸载）"
+          Write-Host "🔧 开始生成ISS脚本（强化静默卸载+彻底删除目录）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 逐行写入ISS内容（统一名称为GetIPviaWEB）
+          # 逐行写入ISS内容（统一名称为GetIPviaWEB，强化静默卸载）
           " [Setup]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Force
           " AppName=GetIPviaWEB" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " AppVersion=1.0.0" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
@@ -141,13 +141,15 @@ jobs:
           " SolidCompression=yes" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           # 全局管理员权限（新版Inno Setup推荐配置）
           " PrivilegesRequired=admin" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          # 静默卸载配置
+          # 静默卸载配置（强化）
           " UninstallSilent=yes"                # 卸载静默执行
           " UninstallNoConfirm=yes"             # 卸载不弹确认框
           " UninstallDisplayIcon={app}\GetIPviaWEB.exe"
           " UninstallDisplayName=GetIPviaWEB"
           " UninstallShowProgress=yes"          # 显示卸载进度
           " UninstallProgressFlags=nevershowmsg" # 不显示卸载消息弹窗
+          " UninstallDeleteAppDir=yes"          # 自动删除应用目录
+          " UninstallDeleteAppDirIfEmpty=no"    # 即使非空也删除
           # 界面控制
           " DisableWelcomePage=yes"
           " DisableProgramGroupPage=yes"
@@ -174,18 +176,21 @@ jobs:
           
           # [Run]段（安装后执行）
           " [Run]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册GetIPviaWEB服务""; Flags: postinstall" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册GetIPviaWEB服务""; Flags: postinstall runhidden" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
-          # [UninstallRun]段（静默卸载）
+          # [UninstallRun]段（强化静默卸载，彻底删除目录）
           " [UninstallRun]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           " Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          # 强制删除安装目录（兜底）
+          " Filename: ""cmd.exe""; Parameters: ""/c rmdir /s /q ""{app}""""; Flags: skipifdoesntexist runhidden nowait" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
-          # [UninstallDelete]段
+          # [UninstallDelete]段（强制删除所有文件和目录）
           " [UninstallDelete]" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
-          " Type: filesandordirs; Name: ""{app}""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Type: files; Name: ""{app}\*.*""" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
+          " Type: dirs; Name: ""{app}""; Flags: recursesubdirs deleteafterinstall" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           "" | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8 -Append
           
           # [Code]段（核心修复：移除废弃的CheckWin32Version，仅保留IsAdminLoggedOn）
@@ -214,7 +219,7 @@ jobs:
           $content = Get-Content GetIPviaWEB.iss -Raw
           $content -replace "`n", "`r`n" | Set-Content GetIPviaWEB.iss -Encoding UTF8 -Force
           
-          Write-Host "✅ ISS脚本生成成功（适配新版Inno Setup）"
+          Write-Host "✅ ISS脚本生成成功（强化静默卸载）"
         id: generate-iss
 
       # ========== 编译安装包 ==========

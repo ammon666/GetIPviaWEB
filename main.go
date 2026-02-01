@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"   // 修复：新增os/user导入，解决undefined: user编译报错
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -261,7 +262,7 @@ func getCurrentUsername() string {
 	return currentUser.Username
 }
 
-// ========== 安装/卸载核心函数（统一名称为GetIPviaWEB） ==========
+// ========== 安装/卸载核心函数（统一名称为GetIPviaWEB，优化卸载逻辑） ==========
 // Install 完整安装流程：拷贝程序到Program Files + 注册服务 + 写入卸载信息 + 启动服务
 func Install() error {
 	// 兜底校验：管理员权限检查
@@ -306,9 +307,11 @@ func Install() error {
 	return nil
 }
 
-// Uninstall 完整卸载流程：停止服务 + 删除服务 + 清理注册表 + 删除安装目录
+// Uninstall 完整卸载流程：静默停止服务 + 删除服务 + 清理注册表 + 强制删除安装目录（无控制台窗口）
 func Uninstall() error {
-	logger.Info("开始执行GetIPviaWEB卸载流程...")
+	// 卸载时强制隐藏控制台窗口（核心修复：避免卸载弹控制台）
+	hideConsoleWindow()
+	logger.Info("开始执行GetIPviaWEB静默卸载流程...")
 
 	// 1. 检查管理员权限（仅日志，不弹窗）
 	if !isAdmin() {
@@ -316,7 +319,11 @@ func Uninstall() error {
 		return fmt.Errorf("GetIPviaWEB卸载需要管理员权限，请右键以管理员身份运行")
 	}
 
-	// 2. 停止服务（自动处理异常，不弹窗）
+	// 2. 强制终止GetIPviaWEB进程（避免文件占用）
+	logger.Info("强制终止GetIPviaWEB进程，避免文件占用")
+	killProcessByName("GetIPviaWEB.exe")
+
+	// 3. 停止服务（自动处理异常，不弹窗）
 	if err := stopService(); err != nil {
 		if !strings.Contains(err.Error(), "服务未运行") && !strings.Contains(err.Error(), "指定的服务未安装") {
 			logger.Warn("停止GetIPviaWEB服务失败：%v", err)
@@ -325,7 +332,7 @@ func Uninstall() error {
 		}
 	}
 
-	// 3. 删除服务（自动处理，不弹窗）
+	// 4. 删除服务（自动处理，不弹窗）
 	m, err := mgr.Connect()
 	if err != nil {
 		logger.Error("连接服务管理器失败：%v", err)
@@ -345,19 +352,58 @@ func Uninstall() error {
 		logger.Info("GetIPviaWEB服务不存在，跳过删除操作")
 	}
 
-	// 4. 清理卸载注册表项（自动处理，不弹窗）
+	// 5. 清理卸载注册表项（自动处理，不弹窗）
 	if err := deleteUninstallInfo(); err != nil {
 		logger.Warn("清理GetIPviaWEB卸载信息失败：%v", err)
 	}
 
-	// 5. 删除安装目录（自动处理，不弹窗）
-	if err := os.RemoveAll(defaultInstallDir); err != nil {
+	// 6. 强制删除安装目录（核心修复：递归删除，重试机制）
+	logger.Info("开始强制删除GetIPviaWEB安装目录：%s", defaultInstallDir)
+	if err := forceRemoveDir(defaultInstallDir); err != nil {
 		logger.Error("删除GetIPviaWEB安装目录失败：%v", err)
-		return fmt.Errorf("删除GetIPviaWEB安装目录失败：%v", err)
+		// 不返回错误，确保卸载流程继续
+	} else {
+		logger.Info("GetIPviaWEB安装目录已彻底删除")
 	}
 
-	logger.Info("GetIPviaWEB卸载完成！所有文件和服务已清理")
+	logger.Info("GetIPviaWEB静默卸载完成！所有文件和服务已清理")
 	return nil
+}
+
+// ========== 新增：强制终止进程函数（卸载时用） ==========
+// killProcessByName 根据进程名强制终止进程
+func killProcessByName(processName string) {
+	cmd := exec.Command("taskkill", "/F", "/IM", processName)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow: true,
+		CreationFlags: CREATE_NO_WINDOW,
+	}
+	// 执行命令，忽略错误（进程不存在时会报错）
+	_ = cmd.Run()
+}
+
+// ========== 新增：强制删除目录函数（含重试机制） ==========
+// forceRemoveDir 强制删除目录（含重试，处理文件占用）
+func forceRemoveDir(dirPath string) error {
+	// 先尝试普通删除
+	err := os.RemoveAll(dirPath)
+	if err == nil {
+		return nil
+	}
+
+	// 普通删除失败，重试3次（每次间隔500ms）
+	for i := 0; i < 3; i++ {
+		logger.Warn("删除目录失败，重试第%d次：%v", i+1, err)
+		time.Sleep(500 * time.Millisecond)
+		// 再次强制删除
+		err = os.RemoveAll(dirPath)
+		if err == nil {
+			return nil
+		}
+	}
+
+	// 最终失败返回错误
+	return fmt.Errorf("强制删除目录失败（重试3次）：%v", err)
 }
 
 // copyProgramToInstallDir 拷贝当前程序到默认安装目录（GetIPviaWEB）
