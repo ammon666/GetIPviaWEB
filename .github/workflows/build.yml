@@ -25,8 +25,7 @@ jobs:
               echo "❌ 读取Secret失败：IP_REPORT_API_KEY 为空，请检查Secrets配置"
               exit 1
           } else {
-              echo "✅ 读取Secret成功，APIKey明文：$env:TEST_API_KEY"
-              echo "✅ APIKey长度：$($env:TEST_API_KEY.Length) 字符"
+              echo "✅ 读取Secret成功，APIKey长度：$($env:TEST_API_KEY.Length) 字符"
           }
 
       - name: 修复模块校验和并整理依赖
@@ -60,17 +59,13 @@ jobs:
               exit 1
           }
 
-      - name: 生成 Inno Setup 安装包脚本
+      - name: 生成 Inno Setup 安装包脚本（已删除4行发布者配置）
         run: |
-          # 写入 Inno Setup 配置脚本（.iss），可根据需求自定义
+          # 写入 Inno Setup 配置脚本（.iss），删除了AppPublisher等4行配置
           @'
           [Setup]
           AppName=GetIPviaWEB Service
           AppVersion=1.0.0
-          AppPublisher=YourName
-          AppPublisherURL=https://github.com/your-repo  # 替换为你的仓库地址
-          AppSupportURL=https://github.com/your-repo/issues
-          AppUpdatesURL=https://github.com/your-repo
           DefaultDirName={autopf}\GetIPviaWEB
           DefaultGroupName=GetIPviaWEB
           OutputDir=./installer
@@ -95,7 +90,7 @@ jobs:
           [UninstallDelete]
           Type: filesandordirs; Name: "{app}"
           '@ | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8
-          echo "✅ Inno Setup 脚本生成完成"
+          echo "✅ Inno Setup 脚本生成完成（已删除4行发布者配置）"
 
       - name: 编译图形化安装包
         run: |
