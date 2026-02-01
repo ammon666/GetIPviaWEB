@@ -119,90 +119,91 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成Inno Setup安装包脚本（彻底修复Type参数错误） ==========
+      # ========== 生成Inno Setup安装包脚本（修复YAML语法错误） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（彻底修复Type参数解析错误）"
+          Write-Host "🔧 开始生成ISS脚本（修复YAML语法+Type参数解析错误）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 直接生成完整的ISS脚本内容（避免逐行拼接的隐形字符问题）
-          $issContent = @'
-[Setup]
-AppName=GetIPviaWEB
-AppVersion=1.0.0
-DefaultDirName={pf}\GetIPviaWEB
-DefaultGroupName=GetIPviaWEB
-OutputDir=./installer
-OutputBaseFilename=GetIPviaWEB-Setup(需要管理员权限)
-Compression=lzma
-SolidCompression=yes
-PrivilegesRequired=admin
-UninstallSilent=yes
-UninstallNoConfirm=yes
-UninstallDisplayIcon={app}\GetIPviaWEB.exe
-UninstallDisplayName=GetIPviaWEB
-UninstallShowProgress=yes
-UninstallProgressFlags=nevershowmsg
-UninstallDeleteAppDir=yes
-UninstallDeleteAppDirIfEmpty=no
-DisableWelcomePage=yes
-DisableProgramGroupPage=yes
-DisableReadyPage=yes
-DisableFinishedPage=yes
-DisableDirEdit=no
-DirExistsWarning=yes
-SetupMutex=GetIPviaWEB-InstallMutex
-CloseApplications=yes
-CloseApplicationsFilter=GetIPviaWEB.exe
-
-[Files]
-Source: "GetIPviaWEB.exe"; DestDir: "{app}"; Flags: ignoreversion; Permissions: users-full
-
-[Icons]
-Name: "{group}\GetIPviaWEB"; Filename: "{app}\GetIPviaWEB.exe"
-Name: "{group}\卸载GetIPviaWEB"; Filename: "{uninstallexe}"
-
-[Run]
-Filename: "{app}\GetIPviaWEB.exe"; Parameters: "install"; Description: "安装并注册GetIPviaWEB服务"; Flags: postinstall runhidden
-
-[UninstallRun]
-Filename: "taskkill.exe"; Parameters: "/F /IM GetIPviaWEB.exe"; Flags: skipifdoesntexist runhidden nowait
-Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait
-Filename: "cmd.exe"; Parameters: "/c rmdir /s /q ""{app}"""; Flags: skipifdoesntexist runhidden nowait
-
-[UninstallDelete]
-Type: files; Name: "{app}\*.*"
-Type: dirs; Name: "{app}"
-
-[Code]
-function InitializeSetup(): Boolean;
-var
-  IsAdmin: Boolean;
-begin
-  IsAdmin := IsAdminLoggedOn();
-  if not IsAdmin then
-  begin
-    MsgBox('当前未以管理员权限运行安装包！' + #13#10 + '请右键点击安装包，选择「以管理员身份运行」后重试。', mbError, MB_OK);
-    Result := False;
-  end
-  else
-  begin
-    Result := True;
-  end;
-end;
-'@
+          # 定义ISS脚本内容（避免Here-String导致的YAML语法错误）
+          $issLines = @(
+              "[Setup]",
+              "AppName=GetIPviaWEB",
+              "AppVersion=1.0.0",
+              "DefaultDirName={pf}\GetIPviaWEB",
+              "DefaultGroupName=GetIPviaWEB",
+              "OutputDir=./installer",
+              "OutputBaseFilename=GetIPviaWEB-Setup(需要管理员权限)",
+              "Compression=lzma",
+              "SolidCompression=yes",
+              "PrivilegesRequired=admin",
+              "UninstallSilent=yes",
+              "UninstallNoConfirm=yes",
+              "UninstallDisplayIcon={app}\GetIPviaWEB.exe",
+              "UninstallDisplayName=GetIPviaWEB",
+              "UninstallShowProgress=yes",
+              "UninstallProgressFlags=nevershowmsg",
+              "UninstallDeleteAppDir=yes",
+              "UninstallDeleteAppDirIfEmpty=no",
+              "DisableWelcomePage=yes",
+              "DisableProgramGroupPage=yes",
+              "DisableReadyPage=yes",
+              "DisableFinishedPage=yes",
+              "DisableDirEdit=no",
+              "DirExistsWarning=yes",
+              "SetupMutex=GetIPviaWEB-InstallMutex",
+              "CloseApplications=yes",
+              "CloseApplicationsFilter=GetIPviaWEB.exe",
+              "",
+              "[Files]",
+              "Source: ""GetIPviaWEB.exe""; DestDir: ""{app}""; Flags: ignoreversion; Permissions: users-full",
+              "",
+              "[Icons]",
+              "Name: ""{group}\GetIPviaWEB""; Filename: ""{app}\GetIPviaWEB.exe""",
+              "Name: ""{group}\卸载GetIPviaWEB""; Filename: ""{uninstallexe}""",
+              "",
+              "[Run]",
+              "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册GetIPviaWEB服务""; Flags: postinstall runhidden",
+              "",
+              "[UninstallRun]",
+              "Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runhidden nowait",
+              "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait",
+              "Filename: ""cmd.exe""; Parameters: ""/c rmdir /s /q ""{app}""""; Flags: skipifdoesntexist runhidden nowait",
+              "",
+              "[UninstallDelete]",
+              "Type: files; Name: ""{app}\*.*""",
+              "Type: dirs; Name: ""{app}""",
+              "",
+              "[Code]",
+              "function InitializeSetup(): Boolean;",
+              "var",
+              "  IsAdmin: Boolean;",
+              "begin",
+              "  IsAdmin := IsAdminLoggedOn();",
+              "  if not IsAdmin then",
+              "  begin",
+              "    MsgBox('当前未以管理员权限运行安装包！' + #13#10 + '请右键点击安装包，选择「以管理员身份运行」后重试。', mbError, MB_OK);",
+              "    Result := False;",
+              "  end",
+              "  else",
+              "  begin",
+              "    Result := True;",
+              "  end;",
+              "end;"
+          )
           
-          # 将内容写入ISS文件（确保UTF8编码+CRLF换行）
+          # 将内容写入ISS文件（确保UTF8+CRLF换行）
+          $issContent = $issLines -join "`r`n"
           $issContent | Set-Content -Path "GetIPviaWEB.iss" -Encoding UTF8 -Force
           
           # 验证生成的ISS文件
           if (Test-Path "GetIPviaWEB.iss") {
               Write-Host "✅ ISS脚本生成成功，文件大小：$(Get-Item GetIPviaWEB.iss).Length 字节"
-              # 输出前几行验证语法
+              # 输出前10行验证语法
               Write-Host "🔍 ISS脚本前10行内容："
               Get-Content "GetIPviaWEB.iss" -First 10
           } else {
