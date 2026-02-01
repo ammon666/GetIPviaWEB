@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -57,19 +58,19 @@ type Logger struct {
 	serviceName   string
 }
 
-// 网卡信息结构体（匹配服务端networks字段要求）
+// 网卡信息结构体（匹配服务端networks字段要求，对齐老代码字段名）
 type NetworkInfo struct {
 	InterfaceName string `json:"interface_name"` // 网卡名称
-	IpAddress     string `json:"ip_address"`     // 对应IP地址
+	IPAddress     string `json:"ip_address"`     // 对应IP地址（对齐老代码字段名）
 }
 
 // 上报数据结构体（严格匹配服务端必填字段）
 type ReportPayload struct {
-	UUID     string        `json:"uuid"`      // 必填
-	Username string        `json:"username"`  // 必填
-	Networks []NetworkInfo `json:"networks"`  // 必填（数组）
-	IP       string        `json:"ip,omitempty"` // 可选（公网IP）
-	TimeStamp string       `json:"timestamp,omitempty"`
+	UUID       string        `json:"uuid"`      // 必填
+	Username   string        `json:"username"`  // 必填
+	Networks   []NetworkInfo `json:"networks"`  // 必填（数组）
+	IP         string        `json:"ip,omitempty"` // 可选（公网IP）
+	TimeStamp  string        `json:"timestamp,omitempty"`
 }
 
 // 全局配置
@@ -93,8 +94,8 @@ var (
 
 	// 全局变量
 	logger                 *Logger // 增强日志器
-	machineFixedUUID       string  // 设备唯一UUID（必填）
-	systemUsername         string  // 系统用户名（必填）
+	machineFixedUUID       string  // 设备唯一UUID（必填，对齐老代码生成逻辑）
+	systemUsername         string  // 系统用户名（必填，对齐老代码获取逻辑）
 	isFirstRun             bool
 	reportInterval         time.Duration
 )
@@ -131,12 +132,8 @@ func init() {
 	}
 	logger.Info("APIKey注入成功（长度：%d），避免硬编码保障安全", len(APIKey))
 
-	// 4. 初始化系统用户名（必填字段）
-	systemUsername, err = getSystemUsername()
-	if err != nil {
-		logger.Error("获取系统用户名失败：%v，使用默认用户名", err)
-		systemUsername = "default-user" // 兜底默认值
-	}
+	// 4. 初始化系统用户名（对齐老代码获取逻辑）
+	systemUsername = getCurrentUsername()
 	logger.Info("获取系统用户名：%s", systemUsername)
 
 	// 5. 初始化上报间隔
@@ -152,101 +149,142 @@ func init() {
 		logger.Info("非首次运行，跳过浏览器弹窗")
 	}
 
-	// 7. 生成设备唯一UUID（必填字段）
-	machineFixedUUID = getMachineUUID()
+	// 7. 生成设备唯一UUID（对齐老代码MD5+MAC生成逻辑）
+	initMachineFixedUUID()
 	logger.Debug("生成设备唯一UUID：%s", machineFixedUUID)
 }
 
-// getMachineUUID 生成设备唯一UUID（确保唯一性）
-func getMachineUUID() string {
-	// 优先获取主机名+MAC地址生成唯一UUID，兜底用时间戳
-	hostname, _ := os.Hostname()
-	macAddr, _ := getMacAddress()
-	if hostname != "" && macAddr != "" {
-		return fmt.Sprintf("%s-%s", hostname, macAddr)
+// ========== 对齐老代码的核心工具函数 ==========
+// initMachineFixedUUID 初始化设备固定UUID（完全复用老代码逻辑）
+func initMachineFixedUUID() {
+	macAddr := getPhysicalNicMAC()
+	if macAddr == "" {
+		machineFixedUUID = "00000000-0000-0000-0000-000000000000"
+		logger.Warn("未获取到MAC，使用默认UUID：%s", machineFixedUUID)
+		return
 	}
-	return fmt.Sprintf("machine-%d", time.Now().UnixNano())
+
+	hash := md5.Sum([]byte(macAddr))
+	machineFixedUUID = fmt.Sprintf("%x-%x-%x-%x-%x",
+		hash[0:4], hash[4:6], hash[6:8], hash[8:10], hash[10:16])
+	logger.Info("初始化UUID：%s", machineFixedUUID)
 }
 
-// getSystemUsername 获取系统当前用户名（必填字段）
-func getSystemUsername() (string, error) {
-	// 方法1：通过os/user包获取
-	currentUser, err := user.Current()
-	if err == nil {
-		return currentUser.Username, nil
-	}
-	// 方法2：兜底获取环境变量
-	username := os.Getenv("USERNAME")
-	if username != "" {
-		return username, nil
-	}
-	return "", fmt.Errorf("无法获取系统用户名")
-}
-
-// getMacAddress 获取本机MAC地址（用于生成唯一UUID）
-func getMacAddress() (string, error) {
+// getPhysicalNicMAC 获取物理网卡MAC（完全复用老代码逻辑，过滤虚拟网卡）
+func getPhysicalNicMAC() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", err
+		logger.Error("获取网卡列表失败：%v", err)
+		return ""
 	}
+
 	for _, iface := range ifaces {
-		// 修复点：正确判断网卡启用且非回环（!运算符使用错误）
-		if iface.Flags&net.FlagUp != 0 && iface.Flags&net.FlagLoopback == 0 {
-			mac := iface.HardwareAddr.String()
-			if mac != "" {
-				return mac, nil
-			}
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.HardwareAddr.String() == "" {
+			continue
+		}
+
+		nicName := strings.ToLower(iface.Name)
+		// 过滤虚拟网卡（docker/vmware/virtual/vpn/hyper-v）
+		if strings.Contains(nicName, "docker") || strings.Contains(nicName, "vmware") || strings.Contains(nicName, "virtual") ||
+			strings.Contains(nicName, "vpn") || strings.Contains(nicName, "hyper-v") {
+			continue
+		}
+
+		// 只保留物理网卡（ethernet/wlan/wi-fi）
+		if strings.Contains(nicName, "ethernet") || strings.Contains(nicName, "wlan") || strings.Contains(nicName, "wi-fi") {
+			logger.Debug("找到物理网卡：%s，MAC：%s", iface.Name, iface.HardwareAddr.String())
+			return iface.HardwareAddr.String()
 		}
 	}
-	return "", fmt.Errorf("未找到有效MAC地址")
+
+	logger.Warn("未找到有效物理网卡MAC")
+	return ""
 }
 
-// getLocalNetworks 获取本机所有网卡和对应IP（必填的networks字段）
+// getCurrentUsername 获取系统用户名（完全复用老代码逻辑）
+func getCurrentUsername() string {
+	currentUser, err := user.Current()
+	if err != nil {
+		logger.Error("获取用户名失败：%v", err)
+		return "未知用户"
+	}
+
+	if strings.Contains(currentUser.Username, "\\") {
+		parts := strings.Split(currentUser.Username, "\\")
+		return parts[len(parts)-1]
+	}
+	return currentUser.Username
+}
+
+// isPrivateIPv4 过滤私有IP（完全复用老代码逻辑）
+func isPrivateIPv4(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	return ip[0] == 10 || (ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31) ||
+		(ip[0] == 192 && ip[1] == 168) || (ip[0] == 169 && ip[1] == 254)
+}
+
+// getLocalNetworks 获取本机物理网卡IP（对齐老代码过滤逻辑）
 func getLocalNetworks() []NetworkInfo {
-	var networks []NetworkInfo
+	var networkInfos []NetworkInfo
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		logger.Error("获取网卡信息失败：%v", err)
-		return networks
+		logger.Error("获取网卡列表失败：%v", err)
+		return networkInfos
 	}
 
 	for _, iface := range ifaces {
 		// 跳过禁用/回环网卡
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 || iface.HardwareAddr.String() == "" {
 			continue
 		}
-		// 获取网卡所有IP
+
+		// 过滤虚拟网卡
+		nicName := strings.ToLower(iface.Name)
+		if strings.Contains(nicName, "docker") || strings.Contains(nicName, "vmware") || strings.Contains(nicName, "virtual") ||
+			strings.Contains(nicName, "vpn") || strings.Contains(nicName, "hyper-v") {
+			continue
+		}
+
+		// 获取网卡地址
 		addrs, err := iface.Addrs()
 		if err != nil {
-			logger.Warn("获取网卡[%s]IP失败：%v", iface.Name, err)
+			logger.Warn("网卡%s获取地址失败：%v", iface.Name, err)
 			continue
 		}
-		// 遍历IP并添加到networks
+
+		// 过滤私有IPv4地址
 		for _, addr := range addrs {
 			ipNet, ok := addr.(*net.IPNet)
-			if !ok || ipNet.IP.IsLoopback() {
+			if !ok {
 				continue
 			}
-			// 只保留IPv4地址（按需可添加IPv6）
-			if ip4 := ipNet.IP.To4(); ip4 != nil {
-				networks = append(networks, NetworkInfo{
-					InterfaceName: iface.Name,
-					IpAddress:     ip4.String(),
-				})
-				logger.Debug("网卡[%s] IP：%s", iface.Name, ip4.String())
+
+			ip := ipNet.IP.To4()
+			if ip == nil || ip.IsLoopback() || !isPrivateIPv4(ip) {
+				continue
 			}
+
+			ipStr := ip.String()
+			logger.Debug("网卡%s有效私有IPv4：%s", iface.Name, ipStr)
+			networkInfos = append(networkInfos, NetworkInfo{
+				InterfaceName: iface.Name,
+				IPAddress:     ipStr,
+			})
+			break // 每个网卡只取第一个有效IP
 		}
 	}
 
 	// 兜底：如果没有获取到网卡信息，添加默认值
-	if len(networks) == 0 {
-		networks = append(networks, NetworkInfo{
+	if len(networkInfos) == 0 {
+		networkInfos = append(networkInfos, NetworkInfo{
 			InterfaceName: "default",
-			IpAddress:     "127.0.0.1",
+			IPAddress:     "127.0.0.1",
 		})
-		logger.Warn("未获取到有效网卡信息，使用默认值")
+		logger.Warn("未获取到有效物理网卡信息，使用默认值")
 	}
-	return networks
+	return networkInfos
 }
 
 // ======== 增强日志核心方法 ========
@@ -464,7 +502,17 @@ func runBackground() {
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 	logger.Info("后台运行模式：开始定时上报（永久运行），间隔：%v", reportInterval)
-	select {}
+	for {
+		select {
+		case <-ticker.C:
+			logger.Debug("定时上报触发")
+			if err := reportIP(); err != nil {
+				logger.Error("定时上报失败：%v", err)
+			} else {
+				logger.Info("定时上报成功")
+			}
+		}
+	}
 }
 
 // ipReportService 实现Windows服务接口
@@ -567,18 +615,18 @@ func reportIP() error {
 		logger.Debug("获取到公网IP：%s", publicIP)
 	}
 
-	// 2. 获取本机网卡信息（必填的networks字段）
-	logger.Debug("获取本机网卡信息（必填字段）")
+	// 2. 获取本机物理网卡信息（对齐老代码过滤逻辑）
+	logger.Debug("获取本机物理网卡信息（必填字段）")
 	localNetworks := getLocalNetworks()
-	logger.Debug("获取到网卡信息：%d个", len(localNetworks))
+	logger.Debug("获取到物理网卡信息：%d个", len(localNetworks))
 
 	// 3. 构造上报数据（严格匹配服务端必填字段）
 	payload := ReportPayload{
-		UUID:     machineFixedUUID,       // 必填
-		Username: systemUsername,         // 必填
-		Networks: localNetworks,          // 必填（数组）
-		IP:       publicIP,               // 可选（公网IP）
-		TimeStamp: time.Now().Format(time.RFC3339),
+		UUID:       machineFixedUUID,       // 老代码逻辑生成的UUID
+		Username:   systemUsername,         // 老代码逻辑获取的用户名
+		Networks:   localNetworks,          // 老代码逻辑过滤的网卡信息
+		IP:         publicIP,               // 可选（公网IP）
+		TimeStamp:  time.Now().Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
