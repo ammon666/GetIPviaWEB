@@ -13,6 +13,11 @@ jobs:
   build-windows:
     # 指定运行环境为Windows（walk库仅支持Windows编译）
     runs-on: windows-latest
+    # 全局环境变量：配置Go模块代理，解决认证/拉取失败问题
+    env:
+      GOPROXY: "https://goproxy.cn,direct"  # 核心：使用公共代理，优先从代理拉取依赖
+      GO111MODULE: "on"                     # 强制开启Go模块模式
+
     # 任务步骤
     steps:
       # 步骤1：拉取代码到CI服务器
@@ -23,12 +28,12 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          # 指定Go版本（需与本地开发版本一致，建议>=1.18）
+          # 指定Go版本（需与模块版本兼容）
           go-version: '1.21'
           # 缓存Go模块，加速后续构建
           cache: true
 
-      # 步骤3：整理依赖（核心：补全go.sum缺失的条目）
+      # 步骤3：整理依赖（核心：通过代理拉取，无认证提示）
       - name: Install and tidy dependencies
         run: go mod tidy
 
