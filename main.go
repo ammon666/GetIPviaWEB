@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows/svc"
-	"golang.org/x/sys/windows/svc/debug"
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -23,17 +22,16 @@ var (
 	// 日志&标记文件路径（确保Local System账户可访问）
 	logPath        = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "service.log")
 	firstRunFlag   = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "first_run_done") // 首次启动标记文件
-	// 服务配置（仅保留必选字段）
+	// 服务配置（修复：移除mgr.Config中不存在的Name字段）
 	serviceConfig = &mgr.Config{
-		Name:        "GetIPviaWEBService",       // 服务名称（唯一）
 		DisplayName: "IP监控自动上报服务",        // 服务显示名称
 		Description: "开机自动运行，仅首次启动弹浏览器，定时上报IP信息", // 服务描述
 	}
 
-	// Windows API常量
+	// Windows API常量（修复：CREATE_NO_WINDOW改为uint32类型）
 	SIGBREAK        = syscall.Signal(21)
-	CREATE_NO_WINDOW = 0x08000000 // uint32类型
-	SW_HIDE         = 0           // uintptr类型
+	CREATE_NO_WINDOW = uint32(0x08000000) // 修正为uint32类型
+	SW_HIDE         = 0                   // uintptr类型
 
 	// 业务变量（APIKey通过-ldflags编译注入，无默认值）
 	APIKey          string // 核心修改：不再硬编码，编译时注入
@@ -42,11 +40,11 @@ var (
 	DefaultInterval = 1 * time.Minute
 	ViewURLTemplate = "https://getip.ammon.de5.net/view/%s"
 
-	// 全局变量
+	// 全局变量（修复：debug.Logger改为eventlog.Log）
 	machineFixedUUID string
-	logger           debug.Logger // 服务日志
-	reportInterval   time.Duration // 上报间隔
-	isFirstRun       bool          // 是否是首次启动（内存标记，初始为true）
+	logger           *eventlog.Log // 修正日志类型
+	reportInterval   time.Duration  // 上报间隔
+	isFirstRun       bool           // 是否是首次启动（内存标记，初始为true）
 )
 
 // init 初始化函数：校验APIKey，无值则panic（强制要求编译时注入）
@@ -83,7 +81,7 @@ func init() {
 
 // 主函数：服务入口
 func main() {
-	// 初始化事件日志
+	// 初始化事件日志（修复：调整日志初始化逻辑）
 	var err error
 	logger, err = eventlog.Open("GetIPviaWEBService")
 	if err != nil {
@@ -96,7 +94,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":
-			err = installService()
+			err = installService("GetIPviaWEBService") // 传入服务名称
 			if err != nil {
 				logger.Error(1, fmt.Sprintf("安装服务失败: %v", err))
 				writeLog(fmt.Sprintf("安装服务失败: %v", err))
@@ -106,7 +104,7 @@ func main() {
 			writeLog("服务安装成功")
 			return
 		case "uninstall":
-			err = removeService()
+			err = removeService("GetIPviaWEBService")
 			if err != nil {
 				logger.Error(1, fmt.Sprintf("卸载服务失败: %v", err))
 				writeLog(fmt.Sprintf("卸载服务失败: %v", err))
@@ -267,7 +265,7 @@ func openBrowser(url string) {
 	cmd := exec.Command("cmd", "/c", "start", "", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
-		CreationFlags: CREATE_NO_WINDOW,
+		CreationFlags: CREATE_NO_WINDOW, // 已修正为uint32类型
 	}
 	if err := cmd.Start(); err != nil {
 		writeLog(fmt.Sprintf("启动浏览器失败：%v", err))
@@ -286,18 +284,18 @@ func writeLog(msg string) {
 	_, _ = f.WriteString(logMsg)
 }
 
-// installService 安装Windows服务
-func installService() error {
+// installService 安装Windows服务（修复：传入服务名称参数）
+func installService(serviceName string) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return err
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService("GetIPviaWEBService")
+	s, err := m.OpenService(serviceName)
 	if err == nil {
 		s.Close()
-		return fmt.Errorf("服务已存在")
+		return fmt.Errorf("服务%s已存在", serviceName)
 	}
 
 	exePath, err := os.Executable()
@@ -305,7 +303,8 @@ func installService() error {
 		return err
 	}
 
-	s, err = m.CreateService("GetIPviaWEBService", exePath, *serviceConfig)
+	// 修复：创建服务时传入serviceName，而非在Config中设置
+	s, err = m.CreateService(serviceName, exePath, *serviceConfig)
 	if err != nil {
 		return err
 	}
@@ -315,16 +314,16 @@ func installService() error {
 }
 
 // removeService 卸载Windows服务
-func removeService() error {
+func removeService(serviceName string) error {
 	m, err := mgr.Connect()
 	if err != nil {
 		return err
 	}
 	defer m.Disconnect()
 
-	s, err := m.OpenService("GetIPviaWEBService")
+	s, err := m.OpenService(serviceName)
 	if err != nil {
-		return fmt.Errorf("服务不存在：%v", err)
+		return fmt.Errorf("服务%s不存在：%v", serviceName, err)
 	}
 	defer s.Close()
 
