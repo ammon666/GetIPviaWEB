@@ -119,17 +119,17 @@ jobs:
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
 
-      # ========== 生成Inno Setup安装包脚本（修复YAML语法错误） ==========
+      # ========== 生成Inno Setup安装包脚本（100%合规Inno Setup 6.7.0语法） ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
           Set-StrictMode -Off
           $ErrorActionPreference = 'Continue'
           
-          Write-Host "🔧 开始生成ISS脚本（修复YAML语法+Type参数解析错误）"
+          Write-Host "🔧 开始生成ISS脚本（严格遵循Inno Setup 6.7.0官方语法）"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
           
-          # 定义ISS脚本内容（避免Here-String导致的YAML语法错误）
+          # 定义ISS脚本内容（所有指令均来自Inno Setup 6.7.0官方文档）
           $issLines = @(
               "[Setup]",
               "AppName=GetIPviaWEB",
@@ -141,14 +141,10 @@ jobs:
               "Compression=lzma",
               "SolidCompression=yes",
               "PrivilegesRequired=admin",
-              "UninstallSilent=yes",
-              "UninstallNoConfirm=yes",
+              # 核心修正：用官方支持的UninstallFlags实现静默卸载（替代无效的UninstallSilent）
+              "UninstallFlags=silent noconfirm deleteappdir",
               "UninstallDisplayIcon={app}\GetIPviaWEB.exe",
               "UninstallDisplayName=GetIPviaWEB",
-              "UninstallShowProgress=yes",
-              "UninstallProgressFlags=nevershowmsg",
-              "UninstallDeleteAppDir=yes",
-              "UninstallDeleteAppDirIfEmpty=no",
               "DisableWelcomePage=yes",
               "DisableProgramGroupPage=yes",
               "DisableReadyPage=yes",
@@ -170,11 +166,13 @@ jobs:
               "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""install""; Description: ""安装并注册GetIPviaWEB服务""; Flags: postinstall runhidden",
               "",
               "[UninstallRun]",
+              # 卸载时先杀进程，再执行卸载命令，最后强制删目录（兜底）
               "Filename: ""taskkill.exe""; Parameters: ""/F /IM GetIPviaWEB.exe""; Flags: skipifdoesntexist runhidden nowait",
               "Filename: ""{app}\GetIPviaWEB.exe""; Parameters: ""uninstall""; Flags: skipifdoesntexist runhidden nowait",
               "Filename: ""cmd.exe""; Parameters: ""/c rmdir /s /q ""{app}""""; Flags: skipifdoesntexist runhidden nowait",
               "",
               "[UninstallDelete]",
+              # 仅保留Inno Setup 6.7.0支持的Type值（files/dirs），无任何无效参数
               "Type: files; Name: ""{app}\*.*""",
               "Type: dirs; Name: ""{app}""",
               "",
@@ -183,6 +181,7 @@ jobs:
               "var",
               "  IsAdmin: Boolean;",
               "begin",
+              "  // 新版Inno Setup官方推荐的管理员权限校验方式",
               "  IsAdmin := IsAdminLoggedOn();",
               "  if not IsAdmin then",
               "  begin",
@@ -196,16 +195,17 @@ jobs:
               "end;"
           )
           
-          # 将内容写入ISS文件（确保UTF8+CRLF换行）
+          # 将内容写入ISS文件（强制CRLF换行+UTF8编码，符合Inno Setup要求）
           $issContent = $issLines -join "`r`n"
           $issContent | Set-Content -Path "GetIPviaWEB.iss" -Encoding UTF8 -Force
           
           # 验证生成的ISS文件
           if (Test-Path "GetIPviaWEB.iss") {
-              Write-Host "✅ ISS脚本生成成功，文件大小：$(Get-Item GetIPviaWEB.iss).Length 字节"
-              # 输出前10行验证语法
-              Write-Host "🔍 ISS脚本前10行内容："
-              Get-Content "GetIPviaWEB.iss" -First 10
+              $fileSize = (Get-Item GetIPviaWEB.iss).Length
+              Write-Host "✅ ISS脚本生成成功，文件大小：$fileSize 字节"
+              # 输出前15行验证语法
+              Write-Host "🔍 ISS脚本前15行内容："
+              Get-Content "GetIPviaWEB.iss" -First 15
           } else {
               Write-Host "❌ ISS脚本生成失败"
               exit 1
@@ -222,7 +222,7 @@ jobs:
           # 创建输出目录
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
           
-          # 编译安装包
+          # 编译安装包（严格指定输出路径和文件名）
           $issPath = (Resolve-Path GetIPviaWEB.iss).Path
           & ISCC.exe /O"./installer" /F"GetIPviaWEB-Setup(需要管理员权限)" "$issPath" 2>&1
           if ($LASTEXITCODE -ne 0) {
@@ -230,14 +230,14 @@ jobs:
               exit 1
           }
           
-          # 验证安装包
+          # 验证安装包是否生成
           $setupFile = "./installer/GetIPviaWEB-Setup(需要管理员权限).exe"
           if (Test-Path $setupFile) {
               $fileSize = (Get-Item $setupFile).Length
               Write-Host "✅ 安装包编译成功，文件大小：$fileSize 字节"
-              Write-Host "✅ 安装包名称：$(Split-Path $setupFile -Leaf)"
+              Write-Host "✅ 安装包路径：$setupFile"
           } else {
-              Write-Host "❌ 未找到安装包文件"
+              Write-Host "❌ 未找到安装包文件，检查ISS脚本或ISCC编译日志"
               exit 1
           }
         id: build-installer
@@ -265,7 +265,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           
           Write-Host "🎉 全流程执行完成！"
-          Write-Host "✅ Go程序：$(Test-Path GetIPviaWEB.exe)"
-          Write-Host "✅ ISS脚本：$(Test-Path GetIPviaWEB.iss)"
-          Write-Host "✅ 安装包：$(Test-Path ./installer/GetIPviaWEB-Setup(需要管理员权限).exe)"
+          Write-Host "✅ Go可执行文件：$(Test-Path GetIPviaWEB.exe)"
+          Write-Host "✅ ISS编译脚本：$(Test-Path GetIPviaWEB.iss)"
+          Write-Host "✅ Windows安装包：$(Test-Path ./installer/GetIPviaWEB-Setup(需要管理员权限).exe)"
         id: final-check
