@@ -7,6 +7,7 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    timeout-minutes: 5  # 全局超时，避免无限卡住
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -14,22 +15,66 @@ jobs:
       - name: 设置Go环境
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # 可根据实际Go版本调整
+          go-version: '1.22'
+          cache: true  # 缓存Go依赖，加速编译
 
-      - name: 调试 - 验证Secrets传递
-        run: echo "WORKERS_API_KEY存在：${{ secrets.WORKERS_API_KEY != '' }}"
+      - name: 调试 - 系统/Go环境信息
+        run: |
+          echo "=== 系统信息 ==="
+          systeminfo | findstr /B /C:"OS Name" /C:"OS Version"
+          echo "=== Go版本 ==="
+          go version
+          echo "=== Go环境变量 ==="
+          go env
+          echo "=== WORKERS_API_KEY 存在性 ==="
+          if [ "${{ secrets.WORKERS_API_KEY }}" != "" ]; then
+            echo "✅ WORKERS_API_KEY 已传递"
+          else
+            echo "❌ WORKERS_API_KEY 未传递"
+          fi
 
       - name: 编译程序
         env:
-          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }} # 传递Secrets为环境变量
-        run: go build -o ip-monitor.exe main.go
+          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }}
+        run: |
+          echo "=== 开始编译 ==="
+          go build -ldflags="-s -w" -o ip-monitor.exe main.go  # 精简编译产物
+          if [ $? -eq 0 ]; then
+            echo "✅ 编译成功"
+          else
+            echo "❌ 编译失败"
+            exit 1
+          fi
+
+      - name: 验证编译产物
+        run: |
+          echo "=== 检查编译产物 ==="
+          if [ -f "ip-monitor.exe" ]; then
+            echo "✅ ip-monitor.exe 存在"
+            dir ip-monitor.exe
+          else
+            echo "❌ ip-monitor.exe 不存在"
+            exit 1
+          fi
 
       - name: 运行程序（执行上报）
         env:
-          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }} # 运行时也要传递
-        run: .\ip-monitor.exe
+          WORKERS_API_KEY: ${{ secrets.WORKERS_API_KEY }}
+        timeout-minutes: 2  # 单独设置步骤超时
+        run: |
+          echo "=== 开始运行程序 ==="
+          # Windows下强制输出日志，捕获错误
+          .\ip-monitor.exe
+          # 检查程序退出码
+          if [ $LASTEXITCODE -eq 0 ]; then
+            echo "✅ 程序运行成功"
+          else
+            echo "❌ 程序运行失败，退出码：$LASTEXITCODE"
+            exit $LASTEXITCODE
+          fi
 
       - name: 上传产物（可选）
+        if: always()  # 即使前面步骤失败，也上传产物用于调试
         uses: actions/upload-artifact@v4
         with:
           name: ip-monitor-windows
