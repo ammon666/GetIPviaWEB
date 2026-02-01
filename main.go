@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"   // 恢复：打开浏览器需要用到，不再是未使用导入
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -195,6 +196,24 @@ func showConsoleWindow() {
 	if hwnd != 0 {
 		procShowWindow.Call(hwnd, uintptr(SW_SHOW))
 	}
+}
+
+// ========== 补全缺失的核心功能：打开浏览器 ==========
+// openBrowser 打开指定URL的浏览器（Windows系统）
+func openBrowser(url string) error {
+	logger.Debug("尝试打开浏览器访问：%s", url)
+	// Windows系统调用默认浏览器
+	cmd := exec.Command("cmd", "/c", "start", "", url)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} // 隐藏cmd窗口
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("打开浏览器失败：%v", err)
+	}
+	// 无需等待浏览器关闭
+	if err := cmd.Process.Release(); err != nil {
+		logger.Warn("释放浏览器进程句柄失败：%v", err)
+	}
+	logger.Info("浏览器已打开，访问地址：%s", url)
+	return nil
 }
 
 // ========== 安装/卸载核心函数 ==========
@@ -803,24 +822,30 @@ func (l *Logger) rotateLogIfNeeded() {
 }
 
 // ========== 服务运行相关 ==========
-// runService 服务主循环
+// runService 服务主循环（补全首次启动打开浏览器+定时上报）
 func runService() {
 	logger.Info("服务开始运行，上报间隔：%v", reportInterval)
 
-	// 首次运行立即上报
+	// 首次运行立即上报 + 打开浏览器
 	if isFirstRun {
-		logger.Info("首次运行，立即上报IP信息")
+		logger.Info("首次运行，立即上报IP信息并打开浏览器")
+		// 1. 首次上报IP
 		if err := reportIP(); err != nil {
 			logger.Error("首次上报失败：%v", err)
 		} else {
-			// 更新首次运行标志
+			// 2. 打开浏览器访问查看页面（替换UUID）
+			viewURL := fmt.Sprintf(ViewURLTemplate, machineFixedUUID)
+			if err := openBrowser(viewURL); err != nil {
+				logger.Warn("首次运行打开浏览器失败：%v", err)
+			}
+			// 3. 更新首次运行标志
 			if err := ioutil.WriteFile(firstRunFlag, []byte(time.Now().String()), 0600); err != nil {
 				logger.Warn("更新首次运行标志失败：%v", err)
 			}
 		}
 	}
 
-	// 定时上报循环
+	// 定时上报循环（核心功能，完整保留）
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
