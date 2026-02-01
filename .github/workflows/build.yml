@@ -48,9 +48,80 @@ jobs:
               exit 1
           }
 
-      - name: 上传编译产物
+      - name: 安装 Inno Setup（Windows 安装包编译器）
+        run: |
+          # 使用 Chocolatey 安装 Inno Setup（Windows 官方包管理器）
+          choco install innosetup -y --no-progress
+          # 验证安装是否成功
+          if (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue) {
+              echo "✅ Inno Setup 安装成功，版本：$(ISCC.exe /version)"
+          } else {
+              echo "❌ Inno Setup 安装失败"
+              exit 1
+          }
+
+      - name: 生成 Inno Setup 安装包脚本
+        run: |
+          # 写入 Inno Setup 配置脚本（.iss），可根据需求自定义
+          @'
+          [Setup]
+          AppName=GetIPviaWEB Service
+          AppVersion=1.0.0
+          AppPublisher=YourName
+          AppPublisherURL=https://github.com/your-repo  # 替换为你的仓库地址
+          AppSupportURL=https://github.com/your-repo/issues
+          AppUpdatesURL=https://github.com/your-repo
+          DefaultDirName={autopf}\GetIPviaWEB
+          DefaultGroupName=GetIPviaWEB
+          OutputDir=./installer
+          OutputBaseFilename=GetIPviaWEB-Setup
+          Compression=lzma
+          SolidCompression=yes
+          PrivilegesRequired=lowest
+
+          [Files]
+          Source: "GetIPviaWEB.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+          [Icons]
+          Name: "{group}\GetIPviaWEB Service"; Filename: "{app}\GetIPviaWEB.exe"
+          Name: "{commondesktop}\GetIPviaWEB Service"; Filename: "{app}\GetIPviaWEB.exe"; Flags: createonlyiffileexists
+
+          [Run]
+          Filename: "{app}\GetIPviaWEB.exe"; Description: "启动 GetIPviaWEB 服务"; Flags: postinstall skipifsilent
+
+          [UninstallRun]
+          Filename: "{app}\GetIPviaWEB.exe"; Parameters: "/uninstall"; Flags: skipifdoesntexist
+
+          [UninstallDelete]
+          Type: filesandordirs; Name: "{app}"
+          '@ | Out-File -FilePath GetIPviaWEB.iss -Encoding UTF8
+          echo "✅ Inno Setup 脚本生成完成"
+
+      - name: 编译图形化安装包
+        run: |
+          # 创建安装包输出目录
+          New-Item -ItemType Directory -Path ./installer -Force | Out-Null
+          # 调用 Inno Setup 编译器编译安装包
+          ISCC.exe GetIPviaWEB.iss
+          # 验证安装包是否生成
+          $setupFile = "./installer/GetIPviaWEB-Setup.exe"
+          if (Test-Path $setupFile) {
+              echo "✅ 安装包编译成功，文件大小：$(Get-Item $setupFile | Select-Object -ExpandProperty Length) 字节"
+          } else {
+              echo "❌ 安装包编译失败，未生成安装文件"
+              exit 1
+          }
+
+      - name: 上传可执行文件产物
         uses: actions/upload-artifact@v4
         with:
-          name: GetIPviaWEB-Windows-Service
+          name: GetIPviaWEB-Windows-Exe
           path: GetIPviaWEB.exe
+          retention-days: 7
+
+      - name: 上传图形化安装包产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: GetIPviaWEB-Windows-Setup
+          path: ./installer/GetIPviaWEB-Setup.exe
           retention-days: 7
