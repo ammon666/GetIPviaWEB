@@ -89,7 +89,7 @@ var (
 	WorkersURL             = "https://getip.ammon.de5.net/api/report"  // 上报地址
 	ViewURLTemplate        = "https://getip.ammon.de5.net/view/%s"    // 浏览器打开地址
 	Timeout                = 10 * time.Second
-	DefaultInterval        = 1 * time.Minute
+	DefaultInterval        = 60 * time.Minute
 
 	// 全局变量
 	logger                 *Logger // 增强日志器
