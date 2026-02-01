@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"strconv"
+	"os/signal"
 	"strings"
 	"syscall"
 	"time"
@@ -19,19 +19,14 @@ import (
 
 // 配置项：修正后的正确上报地址（删除了错误的POST%20）
 const (
-	WorkersURL = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
-	Timeout    = 5 * time.Second                         // 上报超时时间
-	APIKey     = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
-	ProcessName = "ip-monitor-daemon"                    // 进程名（任务管理器可见）
+	WorkersURL      = "https://getip.ammon.de5.net/api/report" // 正确的上报地址
+	Timeout         = 5 * time.Second                         // 上报超时时间
+	APIKey          = "9ddae7a3-c730-469e-b644-859880ad9752"  // 需与Workers代码中的API_KEY保持一致
+	DefaultInterval = 1 * time.Minute                         // 默认上报间隔：1分钟
 )
 
 // 全局变量：存储机器固定UUID（基于物理网卡MAC，作为唯一查询标识）
-var (
-	machineFixedUUID string
-	daemonMode       bool   // 是否后台运行
-	exitSignal       bool   // 退出信号
-	pidFile          string // PID文件路径（用于记录进程ID）
-)
+var machineFixedUUID string
 
 // ReportData 上报到 Workers 的数据结构（兼容Workers接收格式）
 type ReportData struct {
@@ -50,44 +45,94 @@ type NetworkInfo struct {
 	SubnetMask    string `json:"subnet_mask"`    // 子网掩码
 }
 
-func init() {
-	// 注册命令行参数
-	flag.BoolVar(&daemonMode, "daemon", false, "以后台守护进程模式运行（脱离控制台）")
-	flag.StringVar(&pidFile, "pid", "./ip-monitor.pid", "指定PID文件路径（默认：./ip-monitor.pid）")
-	flag.BoolVar(&exitSignal, "stop", false, "停止后台运行的进程（需指定PID文件）")
-	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "IP监控工具使用说明:\n")
-		fmt.Fprintf(os.Stderr, "  普通运行: %s\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  后台运行: %s -daemon [-pid 自定义PID文件路径]\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  停止后台进程: %s -stop [-pid 自定义PID文件路径]\n", os.Args[0])
-	}
-}
-
 func main() {
-	// 解析命令行参数
+	// ========== 后台运行参数 ==========
+	daemonMode := flag.Bool("daemon", false, "是否后台运行（不依赖控制台）")
+	// 原有间隔参数
+	intervalMin := flag.Float64("interval", 1.0, "定时上报间隔（分钟），例如 0.5 表示30秒，2 表示2分钟")
 	flag.Parse()
 
-	// 处理停止进程指令
-	if exitSignal {
-		if err := stopDaemon(); err != nil {
-			fmt.Printf("停止进程失败: %v\n", err)
+	// ========== 后台运行逻辑 ==========
+	if *daemonMode {
+		// 启动子进程并脱离控制台
+		err := startDaemon()
+		if err != nil {
+			fmt.Printf("【错误】后台启动失败：%v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("进程已成功停止")
-		os.Exit(0)
+		// 父进程退出，子进程后台运行
+		fmt.Println("【成功】程序已转入后台运行，进程ID：", os.Getpid())
+		return
 	}
 
-	// 后台运行模式：脱离控制台
-	if daemonMode {
-		if err := startDaemon(); err != nil {
-			fmt.Printf("后台启动失败: %v\n", err)
-			os.Exit(1)
-		}
+	// 验证并转换间隔参数（防止负数）
+	reportInterval := DefaultInterval
+	if *intervalMin > 0 {
+		reportInterval = time.Duration(*intervalMin * 60) * time.Second
+	} else {
+		fmt.Printf("【警告】间隔参数无效（%.2f分钟），使用默认值：1分钟\n", *intervalMin)
 	}
 
 	// 1. 初始化机器固定UUID（唯一查询标识，优先初始化）
 	initMachineFixedUUID()
 
+	// ========== 初始化定时器 ==========
+	ticker := time.NewTicker(reportInterval)
+	defer ticker.Stop()
+
+	// 处理程序退出信号（Ctrl+C）- 修复Windows兼容的信号监听
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	fmt.Printf("【启动】定时上报已开启，间隔：%.1f分钟（进程ID：%d，按 Ctrl+C 退出）\n", reportInterval.Minutes(), os.Getpid())
+
+	// 首次立即执行一次上报
+	performReport()
+
+	// ========== 定时循环上报 ==========
+	go func() {
+		for range ticker.C {
+			performReport()
+		}
+	}()
+
+	// 阻塞等待退出信号（替代原有的Scanln，避免控制台阻塞）
+	<-sigChan
+	fmt.Println("\n【退出】程序正在停止...")
+	ticker.Stop()
+	fmt.Println("【退出】定时上报已停止，程序结束")
+}
+
+// ========== 修复：Windows兼容的后台运行启动函数 ==========
+func startDaemon() error {
+	// 获取当前程序路径和参数
+	args := os.Args[1:]
+	// 移除 -daemon 参数（避免递归后台启动）
+	newArgs := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg != "-daemon" {
+			newArgs = append(newArgs, arg)
+		}
+	}
+
+	// 构建子进程命令
+	cmd := exec.Command(os.Args[0], newArgs...)
+	// Windows专属配置：脱离控制台，隐藏窗口
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,                              // 隐藏控制台窗口
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP, // 创建新进程组，脱离父进程
+	}
+
+	// 启动子进程（不绑定控制台）
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("启动后台进程失败：%w", err)
+	}
+
+	// 父进程不等待子进程退出，子进程独立后台运行
+	return nil
+}
+
+// ========== 原有函数：performReport 上报逻辑 ==========
+func performReport() {
 	// 2. 获取当前登录用户名（仅保留纯用户名，去掉计算机名）
 	username, err := getCurrentUsername()
 	if err != nil {
@@ -146,133 +191,6 @@ func main() {
 	} else {
 		fmt.Println("\n【上报成功】核心信息已发送到指定地址，UUID：", machineFixedUUID)
 	}
-
-	// 7. 后台模式：持续运行（避免进程退出）；前台模式：暂停程序
-	if daemonMode {
-		fmt.Printf("后台进程已启动，PID：%d，PID文件：%s\n", os.Getpid(), pidFile)
-		// 后台持续运行（监听退出信号）
-		runDaemonLoop()
-	} else {
-		// 前台模式：暂停程序（控制台窗口不立即关闭）
-		fmt.Println("\n按任意键退出...")
-		var input string
-		fmt.Scanln(&input)
-	}
-}
-
-// startDaemon 启动后台守护进程（脱离控制台）
-func startDaemon() error {
-	// 记录PID到文件
-	if err := writePIDFile(); err != nil {
-		return err
-	}
-
-	// Windows系统：创建无控制台进程
-	if isWindows() {
-		cmd := exec.Command(os.Args[0], "-daemon", "-pid", pidFile)
-		cmd.SysProcAttr = &syscall.SysProcAttr{
-			HideWindow:    true,        // 隐藏窗口
-			CreationFlags: 0x08000000,  // CREATE_NO_WINDOW
-		}
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("创建后台进程失败: %w", err)
-		}
-		fmt.Printf("后台进程已启动，PID：%d\n", cmd.Process.Pid)
-		os.Exit(0)
-	}
-
-	// Linux/macOS系统：fork进程脱离终端
-	process, err := os.StartProcess(os.Args[0], append([]string{os.Args[0]}, "-daemon", "-pid", pidFile), &os.ProcAttr{
-		Files: []*os.File{os.Stdin, os.Stdout, os.Stderr},
-		Sys: &syscall.SysProcAttr{
-			Setpgid: true,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("fork进程失败: %w", err)
-	}
-	fmt.Printf("后台进程已启动，PID：%d\n", process.Pid)
-	os.Exit(0)
-
-	return nil
-}
-
-// runDaemonLoop 后台进程主循环（持续运行，监听退出信号）
-func runDaemonLoop() {
-	// 监听系统退出信号（Windows/Linux通用）
-	sigChan := make(chan os.Signal, 1)
-	syscall.RegisterSignal(syscall.SIGINT, sigChan)
-	syscall.RegisterSignal(syscall.SIGTERM, sigChan)
-
-	// 持续运行，直到收到退出信号
-	ticker := time.NewTicker(10 * time.Second) // 每10秒检测一次（可自定义）
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-sigChan:
-			// 收到退出信号，清理PID文件并退出
-			os.Remove(pidFile)
-			fmt.Println("后台进程收到退出信号，正在退出...")
-			os.Exit(0)
-		case <-ticker.C:
-			// 后台持续运行：可在此添加定时上报逻辑（可选）
-			// fmt.Println("后台进程正常运行中...")
-		}
-	}
-}
-
-// stopDaemon 停止后台运行的进程
-func stopDaemon() error {
-	// 读取PID文件
-	pidStr, err := os.ReadFile(pidFile)
-	if err != nil {
-		return fmt.Errorf("读取PID文件失败: %w", err)
-	}
-
-	pid, err := strconv.Atoi(strings.TrimSpace(string(pidStr)))
-	if err != nil {
-		return fmt.Errorf("解析PID失败: %w", err)
-	}
-
-	// 发送终止信号
-	var process *os.Process
-	if process, err = os.FindProcess(pid); err != nil {
-		return fmt.Errorf("查找进程失败: %w", err)
-	}
-
-	// Windows/Linux通用终止信号
-	if isWindows() {
-		if err := process.Kill(); err != nil {
-			return fmt.Errorf("终止进程失败: %w", err)
-		}
-	} else {
-		if err := process.Signal(syscall.SIGTERM); err != nil {
-			// 优雅终止失败，强制杀死
-			if err := process.Kill(); err != nil {
-				return fmt.Errorf("终止进程失败: %w", err)
-			}
-		}
-	}
-
-	// 清理PID文件
-	os.Remove(pidFile)
-
-	return nil
-}
-
-// writePIDFile 写入PID到文件
-func writePIDFile() error {
-	pid := os.Getpid()
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(pid)), 0644); err != nil {
-		return fmt.Errorf("写入PID文件失败: %w", err)
-	}
-	return nil
-}
-
-// isWindows 判断是否为Windows系统
-func isWindows() bool {
-	return strings.Contains(strings.ToLower(os.Getenv("OS")), "windows")
 }
 
 // getCurrentUsername 获取纯用户名（去掉Windows的计算机名前缀）
