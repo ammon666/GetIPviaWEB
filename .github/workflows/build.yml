@@ -157,7 +157,7 @@ jobs:
             'Filename: "{app}\GetIPviaWEB.exe"; Parameters: "uninstall"; Flags: skipifdoesntexist runhidden nowait',
             '',
             '[UninstallDelete]',
-            'Type: filesanddirs; Name: "{app}"',
+            'Type: dirsandfiles; Name: "{app}"',
             '',
             '[Code]',
             'function InitializeSetup(): Boolean;',
