@@ -7,10 +7,10 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    # 核心修复：禁用PowerShell的严格模式，忽略非终止错误
+    # 恢复为标准内置shell，避免语法错误
     defaults:
       run:
-        shell: pwsh -Command "& {Set-StrictMode -Off; $ErrorActionPreference = 'Continue'; & $input}"
+        shell: pwsh
         working-directory: .
     steps:
       - name: 检出代码
@@ -26,6 +26,10 @@ jobs:
 
       - name: 验证 GitHub Secrets 是否配置
         run: |
+          # 先禁用严格模式（在脚本内执行，而非shell配置）
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🔍 检查IP_REPORT_API_KEY配置状态"
           if ("${{ secrets.IP_REPORT_API_KEY }}" -eq "") {
               Write-Host "❌ IP_REPORT_API_KEY 未配置，请在仓库Secrets中添加该密钥"
@@ -37,6 +41,9 @@ jobs:
 
       - name: 修复模块校验和并整理依赖
         run: |
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🔧 清理Go模块缓存并整理依赖"
           go clean -modcache
           go mod tidy
@@ -49,6 +56,9 @@ jobs:
 
       - name: 编译可执行文件（注入APIKey）
         run: |
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🔧 开始编译Go程序（注入APIKey）"
           go build -o GetIPviaWEB.exe -ldflags="-s -w -X main.APIKey=${{ secrets.IP_REPORT_API_KEY }}" main.go
           if ($LASTEXITCODE -ne 0) {
@@ -64,8 +74,11 @@ jobs:
           }
         id: build-exe
 
-      - name: 安装/验证 Inno Setup（强制忽略非终止错误）
+      - name: 安装/验证 Inno Setup
         run: |
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🔧 检查Inno Setup安装状态"
           $isccExists = $false
           try {
@@ -86,7 +99,7 @@ jobs:
               Write-Host "✅ Inno Setup已预装，跳过安装步骤"
           }
 
-          # 强制执行ISCC验证，即使有非终止错误也继续
+          # 强制执行ISCC验证
           $isccTest = $false
           & ISCC.exe /? 2>&1 | Out-Null
           if ($LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq 1) {
@@ -102,7 +115,7 @@ jobs:
               exit 1
           }
           
-          # 核心修复：强制重置退出码为0，确保流程继续
+          # 强制重置退出码为0
           $global:LASTEXITCODE = 0
           Write-Host "✅ 强制重置退出码为0，流程继续执行"
         id: check-inno
@@ -110,6 +123,9 @@ jobs:
       # ========== 生成ISS脚本 ==========
       - name: 生成 Inno Setup 安装包脚本
         run: |
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🔧 开始生成ISS脚本"
           # 清空旧文件
           if (Test-Path "GetIPviaWEB.iss") { Remove-Item "GetIPviaWEB.iss" -Force }
@@ -152,6 +168,9 @@ jobs:
       # ========== 编译安装包 ==========
       - name: 编译图形化安装包
         run: |
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🔧 开始编译安装包"
           # 创建输出目录
           New-Item -ItemType Directory -Path ./installer -Force | Out-Null
@@ -194,6 +213,9 @@ jobs:
 
       - name: 最终确认
         run: |
+          Set-StrictMode -Off
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "🎉 全流程执行完成！"
           Write-Host "✅ Go程序：$(Test-Path GetIPviaWEB.exe)"
           Write-Host "✅ ISS脚本：$(Test-Path GetIPviaWEB.iss)"
