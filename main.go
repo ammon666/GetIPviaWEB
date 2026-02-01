@@ -64,12 +64,11 @@ type NetworkInfo struct {
 	IPAddress     string `json:"ip_address"`     // 对应IP地址（对齐老代码字段名）
 }
 
-// 上报数据结构体（严格匹配服务端必填字段）
+// 上报数据结构体（严格匹配服务端必填字段，已移除公网IP字段）
 type ReportPayload struct {
 	UUID       string        `json:"uuid"`      // 必填
 	Username   string        `json:"username"`  // 必填
 	Networks   []NetworkInfo `json:"networks"`  // 必填（数组）
-	IP         string        `json:"ip,omitempty"` // 可选（公网IP）
 	TimeStamp  string        `json:"timestamp,omitempty"`
 }
 
@@ -601,31 +600,20 @@ loop:
 	return false, 0
 }
 
-// reportIP 上报IP到服务器（核心修复：匹配服务端所有必填字段）
+// reportIP 上报IP到服务器（已移除公网IP相关逻辑）
 func reportIP() error {
 	logger.Debug("开始执行IP上报逻辑")
 
-	// 1. 获取公网IP（可选字段）
-	logger.Debug("尝试获取公网IP")
-	publicIP, err := getPublicIP()
-	if err != nil {
-		logger.Warn("获取公网IP失败：%v，继续上报内网信息", err)
-		publicIP = ""
-	} else {
-		logger.Debug("获取到公网IP：%s", publicIP)
-	}
-
-	// 2. 获取本机物理网卡信息（对齐老代码过滤逻辑）
+	// 1. 获取本机物理网卡信息（对齐老代码过滤逻辑）
 	logger.Debug("获取本机物理网卡信息（必填字段）")
 	localNetworks := getLocalNetworks()
 	logger.Debug("获取到物理网卡信息：%d个", len(localNetworks))
 
-	// 3. 构造上报数据（严格匹配服务端必填字段）
+	// 2. 构造上报数据（严格匹配服务端必填字段，已移除IP字段）
 	payload := ReportPayload{
 		UUID:       machineFixedUUID,       // 老代码逻辑生成的UUID
 		Username:   systemUsername,         // 老代码逻辑获取的用户名
 		Networks:   localNetworks,          // 老代码逻辑过滤的网卡信息
-		IP:         publicIP,               // 可选（公网IP）
 		TimeStamp:  time.Now().Format(time.RFC3339),
 	}
 	payloadBytes, err := json.Marshal(payload)
@@ -634,7 +622,7 @@ func reportIP() error {
 	}
 	logger.Debug("上报数据序列化完成：%s", string(payloadBytes))
 
-	// 4. 创建POST请求（保留X-API-Key请求头）
+	// 3. 创建POST请求（保留X-API-Key请求头）
 	req, err := http.NewRequest("POST", WorkersURL, bytes.NewBuffer(payloadBytes))
 	if err != nil {
 		return fmt.Errorf("创建HTTP请求失败：%v", err)
@@ -644,7 +632,7 @@ func reportIP() error {
 	req.Header.Set("X-API-Key", APIKey) // 编译注入的API Key
 	logger.Debug("已添加X-API-Key请求头（长度：%d）", len(APIKey))
 
-	// 5. 发送请求
+	// 4. 发送请求
 	client := &http.Client{Timeout: Timeout}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -653,19 +641,19 @@ func reportIP() error {
 	defer resp.Body.Close()
 	logger.Debug("收到HTTP响应，状态码：%d", resp.StatusCode)
 
-	// 6. 解析响应
+	// 5. 解析响应
 	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("读取响应体失败：%v", err)
 	}
 	logger.Debug("响应体内容：%s", string(respBody))
 
-	// 7. 校验响应状态
+	// 6. 校验响应状态
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("服务器返回错误：%d，内容：%s", resp.StatusCode, string(respBody))
 	}
 
-	// 8. 校验业务响应
+	// 7. 校验业务响应
 	var result map[string]interface{}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		logger.Warn("解析响应JSON失败（非致命）：%v", err)
@@ -678,27 +666,6 @@ func reportIP() error {
 
 	logger.Debug("IP上报成功完成，服务端返回：%s", string(respBody))
 	return nil
-}
-
-// getPublicIP 获取公网IP（可选字段）
-func getPublicIP() (string, error) {
-	logger.Debug("调用ipify.org获取公网IP")
-	client := &http.Client{Timeout: Timeout}
-	resp, err := client.Get("https://api.ipify.org?format=text")
-	if err != nil {
-		logger.Error("调用ipify.org失败：%v", err)
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	ipBytes, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		logger.Error("读取IP响应失败：%v", err)
-		return "", err
-	}
-	ip := string(ipBytes)
-	logger.Debug("获取到公网IP：%s", ip)
-	return ip, nil
 }
 
 // openBrowser 后台打开浏览器
