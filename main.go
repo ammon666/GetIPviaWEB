@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"os/user"
 	"strings"
 	"time"
@@ -85,6 +86,7 @@ func main() {
 			fmt.Printf("  子网掩码：%s\n", info.SubnetMask)
 		}
 		fmt.Println("----------------------------------------------------")
+	}
 	fmt.Println("====================================================")
 
 	// 6. 上报信息到指定地址（UUID 作为核心字段）
