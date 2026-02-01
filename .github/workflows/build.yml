@@ -14,8 +14,20 @@ jobs:
       - name: 设置 Go 环境
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # 适配你的Go版本（建议与本地开发一致）
+          go-version: '1.22' # 适配你的Go版本（建议1.19+）
           cache: true # 启用Go模块缓存，加速编译
+
+      - name: 测试读取 GitHub Secrets（临时暴露明文）
+        run: |
+          # 将Secret注入环境变量并打印明文（仅测试用，测试后立即删除）
+          $env:TEST_API_KEY = "${{ secrets.IP_REPORT_API_KEY }}"
+          if ($env:TEST_API_KEY -eq "") {
+              echo "❌ 读取Secret失败：IP_REPORT_API_KEY 为空，请检查Secrets配置"
+              exit 1
+          } else {
+              echo "✅ 读取Secret成功，APIKey明文：$env:TEST_API_KEY"
+              echo "✅ APIKey长度：$($env:TEST_API_KEY.Length) 字符"
+          }
 
       - name: 修复模块校验和并整理依赖
         run: |
