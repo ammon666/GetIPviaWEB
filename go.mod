@@ -4,6 +4,6 @@ go 1.21
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/lxn/walk v0.0.0-20240109072511-0819891e421b
-	github.com/lxn/win v0.0.0-20240109072511-0819891e421b // indirect
+	github.com/lxn/walk v0.0.0-20230515022122-56747772800f
+	github.com/lxn/win v0.0.0-20230515022122-56747772800f // indirect
 )
