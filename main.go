@@ -17,6 +17,16 @@ import (
 	"time"
 )
 
+// ========== 关键修复：手动定义Windows缺失的syscall常量 ==========
+const (
+	// Windows信号常量：SIGBREAK（中断信号，对应值21）
+	SIGBREAK = syscall.Signal(21)
+	// Windows进程创建标志（CREATE_NO_WINDOW：不创建控制台窗口）
+	CREATE_NO_WINDOW = 0x08000000
+	// Windows进程创建标志（DETACHED_PROCESS：分离进程，不继承父控制台）
+	DETACHED_PROCESS = 0x00000008
+)
+
 // 配置项：仅适配Windows系统
 const (
 	WorkersURL      = "https://getip.ammon.de5.net/api/report" // 上报地址
@@ -93,7 +103,8 @@ func main() {
 
 	// 处理Windows退出信号（仅控制台模式有效）
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGBREAK)
+	// 修复：使用手动定义的SIGBREAK常量
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, SIGBREAK)
 	fmt.Printf("【启动】定时上报已开启，间隔：%.1f分钟（进程ID：%d）\n", reportInterval.Minutes(), os.Getpid())
 	fmt.Println("【提示】若需关闭控制台后继续运行，请使用 -daemon 参数启动（如：GetIPviaWEB.exe -daemon）")
 	fmt.Println("【提示】按 Ctrl+C 可正常退出程序\n")
@@ -135,10 +146,11 @@ func startBackgroundProcess() error {
 	// Windows后台进程核心配置：彻底脱离控制台
 	cmd := exec.Command(exePath, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow:      true,                              // 隐藏控制台窗口
-		CreationFlags:   syscall.CREATE_NEW_PROCESS_GROUP | // 创建新进程组，脱离父进程
-			syscall.CREATE_NO_WINDOW | // 不创建控制台窗口（核心：彻底脱离）
-			syscall.DETACHED_PROCESS,  // 分离进程，不继承父控制台句柄
+		HideWindow:    true, // 隐藏控制台窗口
+		// 修复：使用手动定义的进程创建标志常量
+		CreationFlags: syscall.CREATE_NEW_PROCESS_GROUP | // 创建新进程组，脱离父进程
+			CREATE_NO_WINDOW | // 不创建控制台窗口（核心：彻底脱离）
+			DETACHED_PROCESS,  // 分离进程，不继承父控制台句柄
 	}
 
 	// 重定向输出（可选：如需记录日志，可改为写入文件）
