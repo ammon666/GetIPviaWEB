@@ -22,13 +22,14 @@ import (
 
 // ========== 全局配置 ==========
 var (
-	// 日志路径（确保Local System账户可写入）
-	logPath = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "service.log")
-	// 服务配置（仅保留必选字段，避免版本兼容问题）
+	// 日志&标记文件路径（确保Local System账户可访问）
+	logPath        = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "service.log")
+	firstRunFlag   = filepath.Join(os.Getenv("ProgramData"), "GetIPviaWEB", "first_run_done") // 首次启动标记文件
+	// 服务配置（仅保留必选字段）
 	serviceConfig = &service.Config{
-		Name:        "GetIPviaWEBService",       // 服务名称（唯一，不可包含空格）
+		Name:        "GetIPviaWEBService",       // 服务名称（唯一）
 		DisplayName: "IP监控自动上报服务",        // 服务显示名称
-		Description: "开机自动运行（未登录也可），定时上报IP信息", // 服务描述
+		Description: "开机自动运行，仅首次启动弹浏览器，定时上报IP信息", // 服务描述
 	}
 
 	// Windows API常量
@@ -43,14 +44,14 @@ var (
 	DefaultInterval = 1 * time.Minute
 	ViewURLTemplate = "https://getip.ammon.de5.net/view/%s"
 
-	// 全局变量（提前解析参数，避免Goroutine问题）
-	machineFixedUUID  string
-	isFirstReportSucc = true
+	// 全局变量
+	machineFixedUUID string
 	logger           service.Logger // 服务日志
-	reportInterval   time.Duration  // 提前初始化上报间隔
+	reportInterval   time.Duration  // 上报间隔
+	isFirstRun       bool           // 是否是首次启动（内存标记，初始为true）
 )
 
-// ========== 命令行参数（提前解析） ==========
+// ========== 命令行参数 ==========
 var (
 	flagBuild    = flag.Bool("build", false, "仅编译模式（CI环境）")
 	flagInterval = flag.Float64("interval", 1.0, "上报间隔（分钟）")
@@ -73,19 +74,16 @@ type NetworkInfo struct {
 	SubnetMask    string `json:"subnet_mask"`
 }
 
-// ========== 服务实现（核心：开机自启） ==========
+// ========== 服务实现 ==========
 type IPReportService struct{}
 
-// Start 服务启动时执行（系统开机/手动启动服务时触发）
+// Start 服务启动时执行
 func (s *IPReportService) Start(svc service.Service) error {
-	// 同步执行初始化，避免Goroutine参数问题
 	go func() {
 		defer func() {
-			// 捕获panic，避免服务退出
 			if r := recover(); r != nil {
 				writeLog(fmt.Sprintf("【紧急】服务运行panic：%v", r))
-				// 兜底阻塞，防止服务退出
-				select {}
+				select {} // 兜底阻塞
 			}
 		}()
 		s.run()
@@ -99,21 +97,23 @@ func (s *IPReportService) Stop(svc service.Service) error {
 	return nil
 }
 
-// run 核心业务逻辑（确保永久阻塞）
+// run 核心业务逻辑
 func (s *IPReportService) run() {
-	writeLog("【服务】IP监控服务已启动（开机未登录运行模式）")
+	// 初始化：检查是否是首次启动（读取标记文件）
+	initFirstRunFlag()
+	writeLog(fmt.Sprintf("【服务】IP监控服务已启动，首次启动：%v", isFirstRun))
 
-	// 初始化UUID（带错误处理）
+	// 初始化UUID
 	initMachineFixedUUID()
 
-	// 初始化定时器（确保不会失败）
+	// 初始化定时器
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
 
 	// 首次立即上报
 	performReport()
 
-	// 永久循环：即使上报失败，也不会退出
+	// 永久循环
 	for {
 		select {
 		case <-ticker.C:
@@ -122,23 +122,57 @@ func (s *IPReportService) run() {
 	}
 }
 
+// ========== 核心新增：首次启动标记逻辑 ==========
+// initFirstRunFlag 初始化首次启动标记（检查磁盘文件）
+func initFirstRunFlag() {
+	// 确保目录存在
+	logDir := filepath.Dir(logPath)
+	if err := os.MkdirAll(logDir, 0777); err != nil {
+		writeLog(fmt.Sprintf("【错误】创建目录失败：%v", err))
+		isFirstRun = true // 兜底设为首次
+		return
+	}
+
+	// 检查标记文件是否存在
+	if _, err := os.Stat(firstRunFlag); os.IsNotExist(err) {
+		isFirstRun = true // 文件不存在 → 首次启动
+		writeLog("【初始化】检测到首次启动，上报成功后将弹出浏览器")
+	} else {
+		isFirstRun = false // 文件存在 → 非首次启动
+		writeLog("【初始化】检测到非首次启动，不会弹出浏览器")
+	}
+}
+
+// markFirstRunDone 标记首次启动完成（创建标记文件）
+func markFirstRunDone() {
+	// 创建空文件标记首次启动完成
+	f, err := os.Create(firstRunFlag)
+	if err != nil {
+		writeLog(fmt.Sprintf("【错误】创建首次启动标记文件失败：%v", err))
+		return
+	}
+	defer f.Close()
+	// 设置文件权限，确保Local System可读写
+	if err := os.Chmod(firstRunFlag, 0777); err != nil {
+		writeLog(fmt.Sprintf("【错误】设置标记文件权限失败：%v", err))
+	}
+	writeLog("【初始化】首次启动标记文件已创建，后续重启不再弹出浏览器")
+}
+
 // ========== 工具函数 ==========
-// writeLog 统一日志写入（Local System账户可访问）
+// writeLog 统一日志写入
 func writeLog(content string) {
 	logContent := fmt.Sprintf("[%s] %s\n", time.Now().Format("2006-01-02 15:04:05"), content)
 
-	// 服务模式使用service.Logger
 	if logger != nil {
 		logger.Info(logContent)
 	}
 
-	// 确保日志目录存在（ProgramData对Local System有写入权限）
 	logDir := filepath.Dir(logPath)
 	if err := os.MkdirAll(logDir, 0777); err != nil {
 		return
 	}
 
-	// 写入日志文件（开放权限，避免Local System无法写入）
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0777)
 	if err != nil {
 		return
@@ -160,9 +194,8 @@ func hideConsoleWindow() {
 	}
 }
 
-// setServiceAutoStart 通过sc命令设置服务为自动启动
+// setServiceAutoStart 设置服务为自动启动
 func setServiceAutoStart(serviceName string) error {
-	// sc config 服务名 start= auto（注意start=后有空格）
 	cmd := exec.Command("sc", "config", serviceName, "start=", "auto")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
@@ -176,7 +209,7 @@ func setServiceAutoStart(serviceName string) error {
 	return nil
 }
 
-// startService 安装后自动启动服务
+// startService 启动服务
 func startService(serviceName string) error {
 	cmd := exec.Command("sc", "start", serviceName)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -191,7 +224,7 @@ func startService(serviceName string) error {
 	return nil
 }
 
-// openBrowser 打开浏览器（兼容Session 0隔离，登录后显示）
+// openBrowser 打开浏览器
 func openBrowser(url string) error {
 	cmd := exec.Command("cmd", "/c", "start", "", url)
 	cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -213,7 +246,7 @@ func openBrowser(url string) error {
 	return nil
 }
 
-// ========== 原有业务逻辑（增强错误处理） ==========
+// ========== 业务逻辑 ==========
 func initMachineFixedUUID() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -314,7 +347,7 @@ func getActivePhysicalNicInfo() ([]NetworkInfo, error) {
 }
 
 func getGatewayAndSubnet(ifaceName string) (string, string) {
-	return "", "" // 保持原有逻辑
+	return "", ""
 }
 
 func isPrivateIPv4(ip net.IP) bool {
@@ -375,6 +408,7 @@ func reportToWorkers(data ReportData) error {
 	return nil
 }
 
+// performReport 执行上报（核心修改：仅首次启动弹浏览器）
 func performReport() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -406,86 +440,85 @@ func performReport() {
 		writeLog(fmt.Sprintf("【上报失败】%v", err))
 	} else {
 		writeLog(fmt.Sprintf("【上报成功】UUID：%s", machineFixedUUID))
-		if isFirstReportSucc {
+		
+		// 核心修改：仅首次启动且上报成功时弹浏览器
+		if isFirstRun {
 			viewURL := fmt.Sprintf(ViewURLTemplate, machineFixedUUID)
-			writeLog(fmt.Sprintf("【首次上报】打开浏览器：%s", viewURL))
+			writeLog(fmt.Sprintf("【首次上报】弹出浏览器：%s", viewURL))
 			go openBrowser(viewURL)
-			isFirstReportSucc = false
+			
+			// 标记首次启动完成（创建文件，后续不再弹）
+			markFirstRunDone()
+			isFirstRun = false // 内存标记也置为false
 		}
 	}
 }
 
-// ========== 主函数（核心修复：提前解析参数） ==========
+// ========== 主函数 ==========
 func main() {
-	// 第一步：优先解析所有参数（必须在主线程执行）
+	// 解析参数
 	flag.Parse()
 
-	// 第二步：初始化上报间隔（避免Goroutine解析参数）
+	// 初始化上报间隔
 	if *flagInterval > 0 {
 		reportInterval = time.Duration(*flagInterval * 60) * time.Second
 	} else {
 		reportInterval = DefaultInterval
 	}
 
-	// CI编译模式：直接返回
+	// CI编译模式
 	if *flagBuild {
 		fmt.Println("【编译模式】仅执行编译，不运行程序")
 		return
 	}
 
-	// 服务模式处理（核心：开机自启）
+	// 服务模式
 	if *flagService != "" {
-		// 创建服务实例
 		svc, err := service.New(&IPReportService{}, serviceConfig)
 		if err != nil {
 			fmt.Printf("【错误】创建服务失败：%v\n", err)
 			os.Exit(1)
 		}
 
-		// 初始化服务日志
 		logger, err = svc.Logger(nil)
 		if err != nil {
 			fmt.Printf("【错误】初始化日志失败：%v\n", err)
 			os.Exit(1)
 		}
 
-		// 执行服务操作
 		switch *flagService {
 		case "install":
-			// 1. 卸载残留服务（避免同名冲突）
 			exec.Command("sc", "delete", serviceConfig.Name).Run()
-			// 2. 安装服务
 			if err := svc.Install(); err != nil {
-				fmt.Printf("【错误】安装服务失败（需管理员权限）：%v\n", err)
+				fmt.Printf("【错误】安装服务失败：%v\n", err)
 				os.Exit(1)
 			}
-			// 3. 设置为自动启动（核心）
 			if err := setServiceAutoStart(serviceConfig.Name); err != nil {
 				fmt.Printf("【警告】设置自动启动失败：%v\n", err)
 			}
-			// 4. 安装后立即启动服务（确保开机时状态正常）
 			if err := startService(serviceConfig.Name); err != nil {
 				fmt.Printf("【警告】启动服务失败：%v\n", err)
 			}
-			fmt.Println("【成功】服务安装完成（已设置开机自动运行并启动）")
+			fmt.Println("【成功】服务安装完成（仅首次启动弹浏览器）")
 		case "uninstall":
-			// 先停止服务，再卸载
 			exec.Command("sc", "stop", serviceConfig.Name).Run()
 			time.Sleep(1 * time.Second)
 			if err := svc.Uninstall(); err != nil {
-				fmt.Printf("【错误】卸载服务失败（需管理员权限）：%v\n", err)
+				fmt.Printf("【错误】卸载服务失败：%v\n", err)
 				os.Exit(1)
 			}
+			// 卸载时可选：删除标记文件（如需重置首次启动）
+			// os.Remove(firstRunFlag)
 			fmt.Println("【成功】服务卸载完成")
 		case "start":
 			if err := svc.Start(); err != nil {
-				fmt.Printf("【错误】启动服务失败（需管理员权限）：%v\n", err)
+				fmt.Printf("【错误】启动服务失败：%v\n", err)
 				os.Exit(1)
 			}
 			fmt.Println("【成功】服务启动完成")
 		case "stop":
 			if err := svc.Stop(); err != nil {
-				fmt.Printf("【错误】停止服务失败（需管理员权限）：%v\n", err)
+				fmt.Printf("【错误】停止服务失败：%v\n", err)
 				os.Exit(1)
 			}
 			fmt.Println("【成功】服务停止完成")
@@ -506,11 +539,13 @@ func main() {
 		return
 	}
 
-	// 手动运行模式（保留原有逻辑，无控制台）
+	// 手动运行模式
 	hideConsoleWindow()
-	writeLog("【手动模式】程序已启动（无控制台后台运行）")
+	// 手动模式也初始化首次启动标记
+	initFirstRunFlag()
+	writeLog(fmt.Sprintf("【手动模式】程序已启动，首次启动：%v", isFirstRun))
 
-	// 手动模式执行业务逻辑
+	// 执行业务逻辑
 	initMachineFixedUUID()
 	ticker := time.NewTicker(reportInterval)
 	defer ticker.Stop()
